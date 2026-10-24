@@ -53,6 +53,7 @@ end
 
 local CONFIG_DIR = "ValkyrieConfigs"
 local CONFIG_FILE = "tps_ulti.json"
+local CONFIG_FLAT = "valkyrie_tps_ulti.json"
 local ConfigStore = {}
 local ConfigBindings = {}
 local PendingConfig = nil
@@ -188,6 +189,7 @@ local function CollectConfigSnapshot()
             }
             data.mobile.keepToSave = CC.keepToSave
             data.mobile.mobEnabled = CC.mobEnabled
+            data.mobile.gkHudVisible = CC.gkHudVisible
         end
     end)
     pcall(function()
@@ -229,6 +231,14 @@ local function ApplyConfigSnapshot(data)
             end
             if CC and data.mobile.keepToSave ~= nil then CC.keepToSave = data.mobile.keepToSave end
             if CC and data.mobile.mobEnabled ~= nil then CC.mobEnabled = data.mobile.mobEnabled end
+            if CC and data.mobile.gkHudVisible ~= nil then
+                CC.gkHudVisible = data.mobile.gkHudVisible
+                if getgenv().Valkyrie_SetGkHud then
+                    getgenv().Valkyrie_SetGkHud(CC.gkHudVisible)
+                elseif ccSyncVisible then
+                    ccSyncVisible()
+                end
+            end
         end)
     end
     pcall(function()
@@ -267,9 +277,12 @@ local function SaveConfigToFile(name)
     if not fileName:lower():find("%.json$") then fileName = fileName .. ".json" end
     local snapshot = CollectConfigSnapshot()
     ConfigStore._lastSave = snapshot
+    local encoded = JsonEncode(snapshot)
     local path = CONFIG_DIR .. "/" .. fileName
     local ok, err = pcall(function()
-        writefile(path, JsonEncode(snapshot))
+        writefile(path, encoded)
+        -- also drop a copy in executor workspace root for easy find
+        pcall(function() writefile(CONFIG_FLAT, encoded) end)
     end)
     return ok, ok and path or tostring(err)
 end
@@ -280,12 +293,18 @@ local function LoadConfigFromFile(name)
     local fileName = (name and name ~= "") and name or CONFIG_FILE
     if not fileName:lower():find("%.json$") then fileName = fileName .. ".json" end
     local path = CONFIG_DIR .. "/" .. fileName
-    if isfile and not isfile(path) then
+    local content
+    local function tryRead(p)
+        if isfile and not isfile(p) then return nil end
+        local ok, c = pcall(function() return readfile(p) end)
+        if ok and type(c) == "string" and #c > 2 then return c end
+        return nil
+    end
+    content = tryRead(path) or tryRead(CONFIG_FLAT) or tryRead(fileName)
+    if not content then
         PendingConfig = nil
         return false, "missing file"
     end
-    local ok, content = pcall(function() return readfile(path) end)
-    if not ok or not content or content == "" then return false, "empty" end
     local decoded = JsonDecode(content)
     if next(decoded) == nil then return false, "bad json" end
     PendingConfig = decoded
@@ -770,7 +789,13 @@ local CC, ccRunCombo, ccSyncSizes, ccSyncOpacity, ccSyncLock, ccSyncVisible
 local CC_DEFAULT_POS, ccRefs
 
 do
-    CC = { mobEnabled = true, keepToSave = 0.08, btn = { size = 88, transparency = 0.12, locked = false, visible = true }, positions = {} }
+    CC = {
+        mobEnabled = true,
+        keepToSave = 0.08,
+        gkHudVisible = true,
+        btn = { size = 88, transparency = 0.12, locked = false, visible = true },
+        positions = {},
+    }
     CC_DEFAULT_POS = { ccKS = UDim2.new(0.62, 0, 0.66, 0), ccJKS = UDim2.new(0.76, 0, 0.66, 0) }
     ccRefs = {}
 
@@ -947,7 +972,95 @@ do
     ccSyncLock = function()
         for _, r in pairs(ccRefs) do r.stroke.Color = CC.btn.locked and Color3.fromRGB(255, 105, 180) or Color3.fromRGB(255, 200, 60) end
     end
-    ccSyncVisible = function() ccGui.Enabled = CC.btn.visible end
+
+    local function setGkHudVisible(on)
+        CC.gkHudVisible = on and true or false
+        local show = CC.gkHudVisible and CC.btn.visible
+        for _, r in pairs(ccRefs) do
+            if r.btn then r.btn.Visible = show end
+        end
+        local gk = ccGui:FindFirstChild("ccGKHelper")
+        if gk then gk.Visible = show end
+        local eye = ccGui:FindFirstChild("ccEyeToggle")
+        if eye then
+            eye.Text = CC.gkHudVisible and "👁" or "👁‍🗨"
+            eye.TextColor3 = CC.gkHudVisible and Color3.fromRGB(255, 200, 220) or Color3.fromRGB(120, 90, 100)
+            eye.BackgroundColor3 = CC.gkHudVisible and Color3.fromRGB(40, 12, 18) or Color3.fromRGB(18, 8, 10)
+        end
+    end
+
+    ccSyncVisible = function()
+        ccGui.Enabled = true
+        setGkHudVisible(CC.gkHudVisible)
+    end
+    getgenv().Valkyrie_SetGkHud = setGkHudVisible
+
+    -- always-on eye button (does not hide with the GK HUD)
+    do
+        local eyeOld = ccGui:FindFirstChild("ccEyeToggle")
+        if eyeOld then eyeOld:Destroy() end
+        local eye = Instance.new("TextButton")
+        eye.Name = "ccEyeToggle"
+        eye.Size = UDim2.new(0, 52, 0, 52)
+        eye.Position = CC.positions["ccEyeToggle"] or UDim2.new(0.02, 0, 0.42, 0)
+        eye.BackgroundColor3 = Color3.fromRGB(40, 12, 18)
+        eye.BackgroundTransparency = 0.1
+        eye.Text = "👁"
+        eye.TextSize = 22
+        eye.Font = Enum.Font.GothamBold
+        eye.TextColor3 = Color3.fromRGB(255, 200, 220)
+        eye.BorderSizePixel = 0
+        eye.AutoButtonColor = false
+        eye.Active = true
+        eye.Parent = ccGui
+        Instance.new("UICorner", eye).CornerRadius = UDim.new(1, 0)
+        local eyeStroke = Instance.new("UIStroke")
+        eyeStroke.Color = Color3.fromRGB(220, 50, 70)
+        eyeStroke.Thickness = 1.4
+        eyeStroke.Parent = eye
+
+        local dragging, dragStart, startPos, moved = false, nil, nil, false
+        eye.InputBegan:Connect(function(input)
+            if input.UserInputType ~= Enum.UserInputType.MouseButton1
+                and input.UserInputType ~= Enum.UserInputType.Touch then return end
+            dragging = true
+            moved = false
+            dragStart = input.Position
+            startPos = eye.Position
+        end)
+        eye.InputChanged:Connect(function(input)
+            if not dragging then return end
+            if input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch then
+                local d = input.Position - dragStart
+                if d.Magnitude > 6 then moved = true end
+                eye.Position = UDim2.new(
+                    startPos.X.Scale, startPos.X.Offset + d.X,
+                    startPos.Y.Scale, startPos.Y.Offset + d.Y
+                )
+            end
+        end)
+        eye.InputEnded:Connect(function(input)
+            if input.UserInputType ~= Enum.UserInputType.MouseButton1
+                and input.UserInputType ~= Enum.UserInputType.Touch then return end
+            if not dragging then return end
+            dragging = false
+            if moved then
+                CC.positions["ccEyeToggle"] = eye.Position
+                pcall(function() SaveConfigToFile(CONFIG_FILE) end)
+                return
+            end
+            setGkHudVisible(not CC.gkHudVisible)
+            pcall(function()
+                ConfigStore.gkHudVisible = CC.gkHudVisible
+                SaveConfigToFile(CONFIG_FILE)
+            end)
+            if Notify then
+                Notify(CC.gkHudVisible and "GK buttons ON" or "GK buttons OFF", 2)
+            end
+        end)
+        setGkHudVisible(CC.gkHudVisible ~= false)
+    end
 end
 
 --  8.5 GK HELPER (BlueGoal/GreenGoal, air-tracking, lag-fixed)
@@ -2436,7 +2549,8 @@ toolsTab:Toggle("Unlimited Stamina", nil, false, function(v)
 end)
 toolsTab:Button("Rejoin", false, function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
 toolsTab:Section("Config", "Saves mobile positions + reach + GK across games")
-toolsTab:Label("Folder: ValkyrieConfigs/tps_ulti.json · auto-saves when you drag buttons")
+toolsTab:Label("Workspace: valkyrie_tps_ulti.json + ValkyrieConfigs/tps_ulti.json")
+toolsTab:Label("👁 eye button hides/shows K1+SAVE, JUMP, GK Helper")
 toolsTab:Button("Save Config", true, function()
 	local ok, res = SaveConfigToFile(CONFIG_FILE)
 	Notify(ok and ("Saved · "..tostring(res)) or ("Fail · "..tostring(res)), ok and 3 or 4)
@@ -2804,9 +2918,8 @@ boot({
 				if g and g:IsA("ScreenGui") then
 					g.Enabled = true
 					g.DisplayOrder = 2147483646
-					for _, child in ipairs(g:GetChildren()) do
-						if child:IsA("GuiObject") then child.Visible = true end
-					end
+					local eye = g:FindFirstChild("ccEyeToggle")
+					if eye then eye.Visible = true end
 				end
 			end
 		end
@@ -2814,6 +2927,11 @@ boot({
 			ApplyConfigSnapshot(PendingConfig)
 		else
 			LoadConfigFromFile(CONFIG_FILE)
+		end
+		if getgenv().Valkyrie_SetGkHud then
+			getgenv().Valkyrie_SetGkHud(CC and CC.gkHudVisible ~= false)
+		elseif ccSyncVisible then
+			ccSyncVisible()
 		end
 	end)
 end)
