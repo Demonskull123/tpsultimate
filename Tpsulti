@@ -51,10 +51,11 @@ do
     ForceLocalScore = { Green = 0, Blue = 0, Enabled = false }
 end
 
-local CONFIG_DIR = "FivelyssConfigs"
-local CONFIG_FILE = "default.json"
+local CONFIG_DIR = "ValkyrieConfigs"
+local CONFIG_FILE = "tps_ulti.json"
 local ConfigStore = {}
 local ConfigBindings = {}
+local PendingConfig = nil
 
 local function JsonEncode(tbl)
     local ok, res = pcall(function() return HttpService:JSONEncode(tbl) end)
@@ -69,9 +70,24 @@ local function JsonDecode(str)
 end
 
 local function EnsureConfigDir()
-    if makefolder and isfolder and not isfolder(CONFIG_DIR) then
-        pcall(function() makefolder(CONFIG_DIR) end)
+    if makefolder then
+        pcall(function()
+            if isfolder and not isfolder(CONFIG_DIR) then makefolder(CONFIG_DIR) end
+            if not isfolder then makefolder(CONFIG_DIR) end
+        end)
     end
+end
+
+local function udim2ToTable(u)
+    if typeof(u) ~= "UDim2" then return nil end
+    return { u.X.Scale, u.X.Offset, u.Y.Scale, u.Y.Offset }
+end
+
+local function tableToUDim2(t)
+    if type(t) ~= "table" then return nil end
+    local a, b, c, d = t[1], t[2], t[3], t[4]
+    if a == nil then return nil end
+    return UDim2.new(a or 0, b or 0, c or 0, d or 0)
 end
 
 local function RegisterConfig(key, ctl, default, apply)
@@ -83,15 +99,179 @@ local function RegisterConfig(key, ctl, default, apply)
     end
 end
 
+local function CollectMobilePositions()
+    local positions = {}
+    pcall(function()
+        if CC and type(CC.positions) == "table" then
+            for id, pos in pairs(CC.positions) do
+                local t = udim2ToTable(pos)
+                if t then positions[id] = t end
+            end
+        end
+    end)
+    pcall(function()
+        local roots = {}
+        if gethui then pcall(function() table.insert(roots, gethui()) end) end
+        table.insert(roots, CoreGui)
+        pcall(function() table.insert(roots, LocalPlayer:FindFirstChild("PlayerGui")) end)
+        for _, root in ipairs(roots) do
+            if root then
+                local g = root:FindFirstChild("Fivelyss_MobileGK")
+                if g then
+                    for _, child in ipairs(g:GetChildren()) do
+                        if child:IsA("GuiObject") and child.Position then
+                            local t = udim2ToTable(child.Position)
+                            if t then positions[child.Name] = t end
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    return positions
+end
+
+local function ApplyMobilePositions(positions)
+    if type(positions) ~= "table" then return end
+    pcall(function()
+        if CC then
+            CC.positions = CC.positions or {}
+            for id, t in pairs(positions) do
+                local u = tableToUDim2(t)
+                if u then CC.positions[id] = u end
+            end
+        end
+    end)
+    pcall(function()
+        local roots = {}
+        if gethui then pcall(function() table.insert(roots, gethui()) end) end
+        table.insert(roots, CoreGui)
+        pcall(function() table.insert(roots, LocalPlayer:FindFirstChild("PlayerGui")) end)
+        for _, root in ipairs(roots) do
+            if root then
+                local g = root:FindFirstChild("Fivelyss_MobileGK")
+                if g then
+                    for id, t in pairs(positions) do
+                        local btn = g:FindFirstChild(id)
+                        local u = tableToUDim2(t)
+                        if btn and btn:IsA("GuiObject") and u then
+                            btn.Position = u
+                        end
+                    end
+                end
+            end
+        end
+    end)
+end
+
+local function CollectConfigSnapshot()
+    local data = {
+        version = 3,
+        placeId = game.PlaceId,
+        mobile = {
+            positions = CollectMobilePositions(),
+            btn = nil,
+            keepToSave = nil,
+            mobEnabled = nil,
+        },
+        reach = nil,
+        gk = nil,
+        extra = {},
+    }
+    pcall(function()
+        if CC then
+            data.mobile.btn = {
+                size = CC.btn and CC.btn.size,
+                transparency = CC.btn and CC.btn.transparency,
+                locked = CC.btn and CC.btn.locked,
+                visible = CC.btn and CC.btn.visible,
+            }
+            data.mobile.keepToSave = CC.keepToSave
+            data.mobile.mobEnabled = CC.mobEnabled
+        end
+    end)
+    pcall(function()
+        if reachSettings then
+            data.reach = {}
+            for k, v in pairs(reachSettings) do
+                if type(v) ~= "function" then data.reach[k] = v end
+            end
+        end
+    end)
+    pcall(function()
+        if GKHelper then
+            data.gk = { Enabled = GKHelper.Enabled == true }
+        end
+    end)
+    for k, v in pairs(ConfigStore) do
+        data.extra[k] = v
+    end
+    return data
+end
+
+local function ApplyConfigSnapshot(data)
+    if type(data) ~= "table" then return end
+    if data.mobile then
+        if data.mobile.positions then
+            ApplyMobilePositions(data.mobile.positions)
+        end
+        pcall(function()
+            if CC and data.mobile.btn then
+                local b = data.mobile.btn
+                if b.size and CC.btn then CC.btn.size = b.size end
+                if b.transparency ~= nil and CC.btn then CC.btn.transparency = b.transparency end
+                if b.locked ~= nil and CC.btn then CC.btn.locked = b.locked end
+                if b.visible ~= nil and CC.btn then CC.btn.visible = b.visible end
+                if ccSyncSizes then ccSyncSizes() end
+                if ccSyncOpacity then ccSyncOpacity() end
+                if ccSyncLock then ccSyncLock() end
+                if ccSyncVisible then ccSyncVisible() end
+            end
+            if CC and data.mobile.keepToSave ~= nil then CC.keepToSave = data.mobile.keepToSave end
+            if CC and data.mobile.mobEnabled ~= nil then CC.mobEnabled = data.mobile.mobEnabled end
+        end)
+    end
+    pcall(function()
+        if data.reach and reachSettings then
+            for k, v in pairs(data.reach) do
+                reachSettings[k] = v
+            end
+            if CreateAllLimbHitboxes then pcall(CreateAllLimbHitboxes) end
+            if LimbBodyParts and UpdateLimbVisualizer then
+                for _, part in ipairs(LimbBodyParts) do pcall(UpdateLimbVisualizer, part) end
+            end
+        end
+    end)
+    pcall(function()
+        if data.gk and StartGKHelper and StopGKHelper then
+            if data.gk.Enabled then StartGKHelper() else StopGKHelper() end
+        end
+    end)
+    if type(data.extra) == "table" then
+        for k, v in pairs(data.extra) do
+            if ConfigBindings[k] then
+                pcall(ConfigBindings[k], v)
+            else
+                ConfigStore[k] = v
+            end
+        end
+    end
+    -- legacy flat format support
+    if data.mobilePositions then ApplyMobilePositions(data.mobilePositions) end
+end
+
 local function SaveConfigToFile(name)
     EnsureConfigDir()
     if not writefile then return false, "writefile not supported" end
     local fileName = (name and name ~= "") and name or CONFIG_FILE
     if not fileName:lower():find("%.json$") then fileName = fileName .. ".json" end
+    local snapshot = CollectConfigSnapshot()
+    ConfigStore._lastSave = snapshot
+    local path = CONFIG_DIR .. "/" .. fileName
     local ok, err = pcall(function()
-        writefile(CONFIG_DIR .. "/" .. fileName, JsonEncode(ConfigStore))
+        writefile(path, JsonEncode(snapshot))
     end)
-    return ok, ok and (CONFIG_DIR .. "/" .. fileName) or err
+    return ok, ok and path or tostring(err)
 end
 
 local function LoadConfigFromFile(name)
@@ -100,17 +280,16 @@ local function LoadConfigFromFile(name)
     local fileName = (name and name ~= "") and name or CONFIG_FILE
     if not fileName:lower():find("%.json$") then fileName = fileName .. ".json" end
     local path = CONFIG_DIR .. "/" .. fileName
-    if not isfile(path) then return false, "missing file" end
+    if isfile and not isfile(path) then
+        PendingConfig = nil
+        return false, "missing file"
+    end
     local ok, content = pcall(function() return readfile(path) end)
     if not ok or not content or content == "" then return false, "empty" end
     local decoded = JsonDecode(content)
-    for k, v in pairs(decoded) do
-        if ConfigBindings[k] then
-            pcall(ConfigBindings[k], v)
-        else
-            ConfigStore[k] = v
-        end
-    end
+    if next(decoded) == nil then return false, "bad json" end
+    PendingConfig = decoded
+    ApplyConfigSnapshot(decoded)
     return true, path
 end
 
@@ -121,12 +300,15 @@ local function ListConfigFiles()
     return (ok and files) or {}
 end
 
-getgenv().Fivelyss_Config = {
+getgenv().Valkyrie_Config = {
     Store = ConfigStore,
     Save = SaveConfigToFile,
     Load = LoadConfigFromFile,
     List = ListConfigFiles,
+    Collect = CollectConfigSnapshot,
+    Apply = ApplyConfigSnapshot,
 }
+getgenv().Fivelyss_Config = getgenv().Valkyrie_Config
 
 do
     pcall(function()
@@ -726,7 +908,12 @@ do
             if dragging then
                 dragging = false
                 CC.positions[def.id] = btn.Position
-                if (input.Position - (dragStart or input.Position)).Magnitude < 6 and not fired and CC.mobEnabled then ccRunCombo(def.combo) end
+                local movedDist = (input.Position - (dragStart or input.Position)).Magnitude
+                if movedDist >= 6 then
+                    pcall(function() SaveConfigToFile(CONFIG_FILE) end)
+                elseif not fired and CC.mobEnabled then
+                    ccRunCombo(def.combo)
+                end
             end
             fired = false
         end)
@@ -739,6 +926,14 @@ do
         for _, r in pairs(ccRefs) do
             if r.btn then r.btn.Visible = true end
         end
+        -- restore positions from disk if already loaded, else try load now
+        pcall(function()
+            if PendingConfig and PendingConfig.mobile and PendingConfig.mobile.positions then
+                ApplyMobilePositions(PendingConfig.mobile.positions)
+            else
+                LoadConfigFromFile(CONFIG_FILE)
+            end
+        end)
     end)
 
     ccSyncSizes = function() for _, r in pairs(ccRefs) do r.btn.Size = UDim2.new(0, CC.btn.size, 0, CC.btn.size) end end
@@ -1520,8 +1715,14 @@ do
                 and input.UserInputType ~= Enum.UserInputType.Touch then return end
             if not dragging then return end
             dragging = false
-            if moved then return end
-            -- tap = toggle
+            if moved then
+                if CC then
+                    CC.positions = CC.positions or {}
+                    CC.positions["ccGKHelper"] = btn.Position
+                end
+                pcall(function() SaveConfigToFile(CONFIG_FILE) end)
+                return
+            end
             if GKHelper.Enabled then
                 StopGKHelper()
                 if Notify then Notify("GK Helper OFF", 2) end
@@ -1531,6 +1732,13 @@ do
             end
             refreshBtn()
         end)
+
+        if CC and CC.positions and CC.positions["ccGKHelper"] then
+            btn.Position = CC.positions["ccGKHelper"]
+        elseif PendingConfig and PendingConfig.mobile and PendingConfig.mobile.positions and PendingConfig.mobile.positions["ccGKHelper"] then
+            local u = tableToUDim2(PendingConfig.mobile.positions["ccGKHelper"])
+            if u then btn.Position = u end
+        end
 
         -- keep label in sync if toggled from menu
         task.spawn(function()
@@ -2227,14 +2435,31 @@ toolsTab:Toggle("Unlimited Stamina", nil, false, function(v)
 	else Notify("Unlimited Stamina OFF", 2) end
 end)
 toolsTab:Button("Rejoin", false, function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
-toolsTab:Section("Config", nil)
+toolsTab:Section("Config", "Saves mobile positions + reach + GK across games")
+toolsTab:Label("Folder: ValkyrieConfigs/tps_ulti.json · auto-saves when you drag buttons")
 toolsTab:Button("Save Config", true, function()
 	local ok, res = SaveConfigToFile(CONFIG_FILE)
-	Notify(ok and ("Saved "..tostring(res)) or ("Fail "..tostring(res)), ok and 3 or 4)
+	Notify(ok and ("Saved · "..tostring(res)) or ("Fail · "..tostring(res)), ok and 3 or 4)
 end)
 toolsTab:Button("Load Config", false, function()
 	local ok, res = LoadConfigFromFile(CONFIG_FILE)
-	Notify(ok and ("Loaded "..tostring(res)) or ("Fail "..tostring(res)), ok and 3 or 4)
+	if ok then
+		task.defer(function()
+			if PendingConfig then ApplyConfigSnapshot(PendingConfig) end
+		end)
+	end
+	Notify(ok and ("Loaded · "..tostring(res)) or ("Fail · "..tostring(res)), ok and 3 or 4)
+end)
+toolsTab:Button("Save Positions Now", false, function()
+	pcall(function()
+		if CC and ccRefs then
+			for id, r in pairs(ccRefs) do
+				if r.btn then CC.positions[id] = r.btn.Position end
+			end
+		end
+	end)
+	local ok, res = SaveConfigToFile(CONFIG_FILE)
+	Notify(ok and "Positions saved" or ("Fail · "..tostring(res)), ok and 2 or 3)
 end)
 
 local skyTab = makeTab("Sky", "☁")
@@ -2461,10 +2686,20 @@ UserInputService.InputBegan:Connect(function(Input, Processed)
 end)
 
 task.defer(function()
-	task.wait(1.5)
+	task.wait(0.4)
 	pcall(function()
 		local ok = LoadConfigFromFile(CONFIG_FILE)
-		if ok then Notify("Config loaded", 2) end
+		if ok then
+			task.wait(0.3)
+			if PendingConfig then ApplyConfigSnapshot(PendingConfig) end
+			Notify("Config loaded", 2)
+		end
+	end)
+end)
+
+pcall(function()
+	game:BindToClose(function()
+		pcall(function() SaveConfigToFile(CONFIG_FILE) end)
 	end)
 end)
 
@@ -2554,7 +2789,6 @@ boot({
 	"ready",
 }, function()
 	Notify("Valkyrie.ui loaded", "good")
-	-- force mobile macro + GK buttons visible (PC + mobile)
 	pcall(function()
 		if CC and CC.btn then
 			CC.btn.visible = true
@@ -2575,6 +2809,11 @@ boot({
 					end
 				end
 			end
+		end
+		if PendingConfig then
+			ApplyConfigSnapshot(PendingConfig)
+		else
+			LoadConfigFromFile(CONFIG_FILE)
 		end
 	end)
 end)
