@@ -762,33 +762,40 @@ do
     GK_CONFIG = {
         GOAL_WIDTH = 42,
         PITCH_GROUND_Y = 5.5,
-        BALL_SPEED_THRESHOLD = 2.8,   -- ignore still / barely-moving balls
-        PREDICTION_MAX_T = 7.0,       -- far shots / long high balls still predict
-        TRIGGER_T = 5.0,              -- full sprint while ball is still far
-        EARLY_T = 6.5,                -- start sliding the moment path is clear
-        MOVE_SPEED = 90,              -- close gap immediately
-        EARLY_SPEED = 70,             -- early phase almost as fast as full
+        BALL_SPEED_THRESHOLD = 2.8,
+        FAST_SHOT_SPEED = 55,         -- treat as hard shot above this
+        BLAST_SHOT_SPEED = 85,        -- rocket shot threshold
+        PREDICTION_MAX_T = 7.0,
+        TRIGGER_T = 5.5,
+        EARLY_T = 7.0,
+        MOVE_SPEED = 110,
+        EARLY_SPEED = 95,
+        FAST_MOVE_SPEED = 130,        -- hard shots
+        BLAST_MOVE_SPEED = 150,       -- rockets
         ORIGINAL_SPEED = 20,
         GK_BASE_OFFSET = 1.5,
-        MAX_COMMIT = 36,              -- wide high / far laterals
+        MAX_COMMIT = 42,
         GRAVITY_FAST = 22,
-        GRAVITY_SLOW = 34,            -- longer hang for high balls
-        AIR_FOLLOW_HEIGHT = 4.5,      -- air mode earlier
-        AIR_TRACK_LERP = 0.85,        -- hard snap under ball
-        HIGH_BALL_Y = 9.5,            -- high threshold lower so more shots count
-        HIGH_LERP = 0.92,             -- near-instant lateral on high
-        AIR_MIN_TTG = 0.12,
-        RETURN_FADE_TIME = 0.18,
-        BALL_REFRESH_INTERVAL = 0.04, -- every tick feel
-        MIN_MOVE_DIST = 0.2,
-        TOWARD_VEL = 0.45,            -- soft gate: ball still "toward" goal
-        FAR_PRE_RANGE = 140,          -- pre-position from this far
-        MAX_RETREAT = 14,             -- wide-angle max drop-back
-        RETREAT_HIGH_STRAIGHT = 4.5,  -- straight high shot: small step back
-        RETREAT_LOW_STRAIGHT = 1.2,   -- straight low shot: tiny step back only
-        FORWARD_BLEND = 0.45,         -- step toward ball when it's straight at you
-        LAT_SMOOTH = 0.55,            -- smooth lateral so curve flicks don't flip side
-        CLOSE_LEAD = 0.55,            -- seconds of velocity lead on close shots
+        GRAVITY_SLOW = 34,
+        AIR_FOLLOW_HEIGHT = 4.5,
+        AIR_TRACK_LERP = 0.9,
+        HIGH_BALL_Y = 9.5,
+        HIGH_LERP = 0.95,
+        AIR_MIN_TTG = 0.1,
+        RETURN_FADE_TIME = 0.15,
+        BALL_REFRESH_INTERVAL = 0.03,
+        MIN_MOVE_DIST = 0.15,
+        TOWARD_VEL = 0.4,
+        FAR_PRE_RANGE = 150,
+        MAX_RETREAT = 14,
+        RETREAT_HIGH_STRAIGHT = 4.5,
+        RETREAT_LOW_STRAIGHT = 1.2,
+        FORWARD_BLEND = 0.45,
+        LAT_SMOOTH = 0.55,
+        LAT_SMOOTH_FAST = 0.78,       -- less lag on hard shots
+        CLOSE_LEAD = 0.5,
+        BOOST_MAX = 175,              -- panic HRP shove cap
+        BOOST_MAX_BLAST = 210,
     }
 
     GKHelper = {
@@ -1032,18 +1039,21 @@ do
 
         raw = math.clamp(raw, -half, half)
 
-        -- smooth vs last frame so a 1-frame curve twitch doesn't send you the wrong way
+        local ballSpeed = vel.Magnitude
         local sm = GK_CONFIG.LAT_SMOOTH or 0.55
+        if ballSpeed >= (GK_CONFIG.BLAST_SHOT_SPEED or 85) then
+            sm = 0.92
+        elseif ballSpeed >= (GK_CONFIG.FAST_SHOT_SPEED or 55) then
+            sm = GK_CONFIG.LAT_SMOOTH_FAST or 0.78
+        end
         if GKHelper.SmoothLat == nil then
             GKHelper.SmoothLat = raw
         else
-            -- if big committed direction already, resist weak opposite flicks
             local delta = raw - GKHelper.SmoothLat
-            if math.abs(delta) < 3.5 then
+            if math.abs(delta) < 3.5 and ballSpeed < (GK_CONFIG.FAST_SHOT_SPEED or 55) then
                 GKHelper.SmoothLat = GKHelper.SmoothLat + delta * sm
             else
-                -- real direction change — follow harder
-                GKHelper.SmoothLat = GKHelper.SmoothLat + delta * math.min(sm + 0.25, 0.9)
+                GKHelper.SmoothLat = GKHelper.SmoothLat + delta * math.min(sm + 0.2, 0.95)
             end
         end
         return math.clamp(GKHelper.SmoothLat, -half, half)
@@ -1338,10 +1348,14 @@ do
                 GKHelper.LastTarget = target
                 GKHelper.LastTargetAge = 0
 
-                -- snap harder under high / air balls so we aren't trailing
-                if inAir or isHigh then
+                local fastShot = speed >= (GK_CONFIG.FAST_SHOT_SPEED or 55)
+                local blastShot = speed >= (GK_CONFIG.BLAST_SHOT_SPEED or 85)
+
+                if inAir or isHigh or fastShot then
                     local curPos = hrp.Position
                     local lerpAmt = isHigh and GK_CONFIG.HIGH_LERP or GK_CONFIG.AIR_TRACK_LERP
+                    if blastShot then lerpAmt = 0.98
+                    elseif fastShot then lerpAmt = math.max(lerpAmt, 0.94) end
                     local lerpX = curPos.X + (target.X - curPos.X) * lerpAmt
                     local lerpZ = curPos.Z + (target.Z - curPos.Z) * lerpAmt
                     target = Vector3.new(lerpX, curPos.Y, lerpZ)
@@ -1350,29 +1364,41 @@ do
                 local dxT = target.X - hrp.Position.X
                 local dzT = target.Z - hrp.Position.Z
                 local flatDist = math.sqrt(dxT*dxT + dzT*dzT)
-                if flatDist > GK_CONFIG.MIN_MOVE_DIST and flatDist < GK_CONFIG.MAX_COMMIT + 16 then
+                local commitExtra = blastShot and 22 or (fastShot and 18 or 16)
+                if flatDist > GK_CONFIG.MIN_MOVE_DIST and flatDist < GK_CONFIG.MAX_COMMIT + commitExtra then
                     local spd = useFullSpeed and GK_CONFIG.MOVE_SPEED or GK_CONFIG.EARLY_SPEED
                     if isHigh or inAir then spd = math.max(spd, GK_CONFIG.MOVE_SPEED) end
+                    if fastShot then spd = math.max(spd, GK_CONFIG.FAST_MOVE_SPEED or 130) end
+                    if blastShot then spd = math.max(spd, GK_CONFIG.BLAST_MOVE_SPEED or 150) end
                     if hum.WalkSpeed ~= spd then hum.WalkSpeed = spd end
                     hum:MoveTo(target)
 
-                    -- emergency boost: MoveTo is too slow when ball is already close
-                    -- shove HRP toward target so we arrive before the net, not after
-                    local urgent = (ttg and ttg < 1.35) or (inAir and flatDist > 1.5) or (isHigh and flatDist > 1.2)
-                    if urgent and flatDist > 0.35 then
+                    -- hard/fast shots: boost earlier and harder so we aren't late
+                    local urgent = (ttg and ttg < 1.6)
+                        or (fastShot and ttg and ttg < 2.2)
+                        or (blastShot)
+                        or (inAir and flatDist > 1.2)
+                        or (isHigh and flatDist > 1.0)
+                        or (fastShot and flatDist > 0.8)
+                    if urgent and flatDist > 0.25 then
                         local dir = Vector3.new(dxT, 0, dzT)
                         local mag = dir.Magnitude
                         if mag > 0.05 then
                             dir = dir / mag
+                            local boostCap = blastShot and (GK_CONFIG.BOOST_MAX_BLAST or 210) or (fastShot and (GK_CONFIG.BOOST_MAX or 175) or 140)
                             local boost
-                            if ttg and ttg < 0.55 then
-                                boost = math.clamp(flatDist / math.max(ttg, 0.08), 55, 140)
-                            elseif ttg and ttg < 1.0 then
-                                boost = math.clamp(flatDist / math.max(ttg, 0.12), 45, 110)
+                            if blastShot then
+                                boost = math.clamp(flatDist / math.max(ttg or 0.2, 0.06), 80, boostCap)
+                            elseif ttg and ttg < 0.45 then
+                                boost = math.clamp(flatDist / math.max(ttg, 0.06), 70, boostCap)
+                            elseif ttg and ttg < 0.9 then
+                                boost = math.clamp(flatDist / math.max(ttg, 0.1), 55, boostCap * 0.9)
+                            elseif fastShot then
+                                boost = math.clamp(60 + flatDist * 3.0, 60, boostCap * 0.85)
                             elseif inAir or isHigh then
-                                boost = math.clamp(48 + flatDist * 2.2, 48, 100)
+                                boost = math.clamp(50 + flatDist * 2.4, 50, 120)
                             else
-                                boost = math.clamp(40 + flatDist * 1.5, 40, 85)
+                                boost = math.clamp(42 + flatDist * 1.6, 42, 95)
                             end
                             local curY = hrp.AssemblyLinearVelocity.Y
                             hrp.AssemblyLinearVelocity = Vector3.new(dir.X * boost, curY, dir.Z * boost)
