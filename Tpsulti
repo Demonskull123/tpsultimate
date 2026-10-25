@@ -361,7 +361,8 @@ local function ApplyConfigSnapshot(data)
 
     pcall(function()
         if data.autoCatch and AutoCatch then
-            AutoCatch.Distance = data.autoCatch.Distance or AutoCatch.Distance
+            local d = data.autoCatch.Distance or AutoCatch.Distance
+            AutoCatch.Distance = math.clamp(tonumber(d) or 5, 1, 5)
             if data.autoCatch.Enabled ~= nil then
                 ConfigStore.AutoCatch_Enabled = data.autoCatch.Enabled
             end
@@ -1139,6 +1140,22 @@ do
     end
     ccSyncLock = function()
         for _, r in pairs(ccRefs) do r.stroke.Color = CC.btn.locked and Color3.fromRGB(255, 105, 180) or Color3.fromRGB(255, 200, 60) end
+        -- GK helper button respects the same lock
+        pcall(function()
+            local roots = {}
+            if gethui then pcall(function() table.insert(roots, gethui()) end) end
+            table.insert(roots, CoreGui)
+            for _, root in ipairs(roots) do
+                local host = root and root:FindFirstChild("Fivelyss_MobileGK")
+                local gk = host and host:FindFirstChild("ccGKHelper")
+                if gk then
+                    local st = gk:FindFirstChildOfClass("UIStroke")
+                    if st then
+                        st.Color = CC.btn.locked and Color3.fromRGB(255, 105, 180) or Color3.fromRGB(255, 200, 60)
+                    end
+                end
+            end
+        end)
     end
 
     local function setGkHudVisible(on)
@@ -1894,23 +1911,41 @@ do
             if GKHelper.Enabled then
                 btn.Text = "GK\nON"
                 btn.BackgroundColor3 = Color3.fromRGB(40, 18, 32)
-                stroke.Color = Color3.fromRGB(80, 255, 120)
                 btn.TextColor3 = Color3.fromRGB(120, 255, 160)
             else
                 btn.Text = "GK\nOFF"
                 btn.BackgroundColor3 = Color3.fromRGB(22, 12, 20)
-                stroke.Color = Color3.fromRGB(255, 105, 180)
                 btn.TextColor3 = Color3.fromRGB(255, 105, 180)
+            end
+            -- lock color: pink when locked, yellow/green when free
+            if CC and CC.btn and CC.btn.locked then
+                stroke.Color = Color3.fromRGB(255, 105, 180)
+            else
+                stroke.Color = GKHelper.Enabled and Color3.fromRGB(80, 255, 120) or Color3.fromRGB(255, 200, 60)
             end
         end
         refreshBtn()
 
-        local dragging, dragStart, startPos, moved = false, nil, nil, false
+        local dragging, dragStart, startPos, moved, fired = false, nil, nil, false, false
         btn.InputBegan:Connect(function(input)
             if input.UserInputType ~= Enum.UserInputType.MouseButton1
                 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+            -- locked = no drag, just toggle on release
+            if CC and CC.btn and CC.btn.locked then
+                if GKHelper.Enabled then
+                    StopGKHelper()
+                    if Notify then Notify("GK Helper OFF", 2) end
+                else
+                    StartGKHelper()
+                    if Notify then Notify("GK Helper ON", 2) end
+                end
+                refreshBtn()
+                fired = true
+                return
+            end
             dragging = true
             moved = false
+            fired = false
             dragStart = input.Position
             startPos = btn.Position
         end)
@@ -1929,6 +1964,7 @@ do
         btn.InputEnded:Connect(function(input)
             if input.UserInputType ~= Enum.UserInputType.MouseButton1
                 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+            if fired then fired = false return end
             if not dragging then return end
             dragging = false
             if moved then
@@ -2538,7 +2574,7 @@ gkTab:Button("Test Jump+Keep+Save", false, function() ccRunCombo("JumpKeepSave")
 ---------------------------------------------------------------------------
 NRC = { Enabled=false, Magnitude=4, Fires=2, Distance=15, Conn=nil }
 ReactKiller = { Enabled=false, Fires=30, Distance=20, Conn=nil }
-AutoCatch = { Enabled=false, Distance=15, Conn=nil }
+AutoCatch = { Enabled=false, Distance=5, Conn=nil }
 
 local reactTab = makeTab("React", "⚡")
 reactTab:Section("No React Decline", nil)
@@ -2623,7 +2659,7 @@ toolsTab:Toggle("Auto Catch", nil, false, function(v)
 		if AutoCatch.Conn then AutoCatch.Conn:Disconnect(); AutoCatch.Conn=nil end
 	end
 end)
-toolsTab:Slider("Catch Distance", nil, 1, 40, 15, function(v) AutoCatch.Distance=v end, " studs")
+toolsTab:Slider("Catch Distance", nil, 1, 5, 5, function(v) AutoCatch.Distance=v end, " studs")
 toolsTab:Button("Release Ball", false, function()
 	pcall(function() local c=GetCharacter(); local t=c and c:FindFirstChildOfClass("Tool"); if t then t:Unequip() end end)
 	Notify("Released", 2)
