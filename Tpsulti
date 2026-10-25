@@ -110,11 +110,11 @@ end
 -- forward decls used by Collect / Apply (filled later)
 local CC, reachSettings, GKHelper, StartGKHelper, StopGKHelper
 local CreateAllLimbHitboxes, RemoveAllLimbHitboxes, UpdateLimbVisualizer, LimbBodyParts
-local NRC, ReactKiller, AutoCatch, SkyboxCfg, ApplySkybox, RemoveCustomSky, ApplyLighting
+local NRC, ReactKiller, SkyboxCfg, ApplySkybox, RemoveCustomSky, ApplyLighting
 local ccSyncSizes, ccSyncOpacity, ccSyncLock, ccSyncVisible
 local UIControls = {}
 local SyncUIFromState
-local SetNRCEnabled, SetReactKillerEnabled, SetAutoCatchEnabled
+local SetNRCEnabled, SetReactKillerEnabled
 
 local function CollectMobilePositions()
     local positions = {}
@@ -198,7 +198,6 @@ local function CollectConfigSnapshot()
         antiban = nil,
         nrc = nil,
         reactKiller = nil,
-        autoCatch = nil,
         sky = nil,
         extra = {},
     }
@@ -252,15 +251,6 @@ local function CollectConfigSnapshot()
                 Enabled = ReactKiller.Enabled == true,
                 Fires = ReactKiller.Fires,
                 Distance = ReactKiller.Distance,
-            }
-        end
-    end)
-
-    pcall(function()
-        if AutoCatch then
-            data.autoCatch = {
-                Enabled = AutoCatch.Enabled == true,
-                Distance = AutoCatch.Distance,
             }
         end
     end)
@@ -378,19 +368,6 @@ local function ApplyConfigSnapshot(data)
                 SetReactKillerEnabled(data.reactKiller.Enabled == true, true)
             elseif data.reactKiller.Enabled ~= nil then
                 ReactKiller.Enabled = data.reactKiller.Enabled == true
-            end
-        end
-    end)
-
-    -- Auto Catch
-    pcall(function()
-        if data.autoCatch and AutoCatch then
-            local d = data.autoCatch.Distance or AutoCatch.Distance
-            AutoCatch.Distance = math.clamp(tonumber(d) or 5, 1, 5)
-            if data.autoCatch.Enabled ~= nil and SetAutoCatchEnabled then
-                SetAutoCatchEnabled(data.autoCatch.Enabled == true, true)
-            elseif data.autoCatch.Enabled ~= nil then
-                AutoCatch.Enabled = data.autoCatch.Enabled == true
             end
         end
     end)
@@ -2607,7 +2584,6 @@ gkTab:Button("Test Jump+Keep+Save", false, function() ccRunCombo("JumpKeepSave")
 ---------------------------------------------------------------------------
 NRC = { Enabled=false, Magnitude=4, Fires=2, Distance=15, Conn=nil }
 ReactKiller = { Enabled=false, Fires=30, Distance=20, Conn=nil }
-AutoCatch = { Enabled=false, Distance=5, Conn=nil }
 
 SetNRCEnabled = function(v, silent)
 	NRC.Enabled = v and true or false
@@ -2652,30 +2628,6 @@ SetReactKillerEnabled = function(v, silent)
 	if UIControls.ReactKiller then pcall(function() UIControls.ReactKiller:Set(ReactKiller.Enabled) end) end
 end
 
-SetAutoCatchEnabled = function(v, silent)
-	AutoCatch.Enabled = v and true or false
-	if AutoCatch.Conn then pcall(function() AutoCatch.Conn:Disconnect() end) AutoCatch.Conn = nil end
-	if AutoCatch.Enabled then
-		AutoCatch.Conn = RunService.Heartbeat:Connect(function()
-			if not AutoCatch.Enabled then return end
-			local ball, root = GetMainBall(), Cache.Root
-			if not ball or not root then return end
-			if (ball.Position-root.Position).Magnitude > AutoCatch.Distance then return end
-			local char = Cache.Character
-			if char then
-				for _, name in ipairs({"Right Arm","Left Arm"}) do
-					local arm = char:FindFirstChild(name)
-					if arm then pcall(function() firetouchinterest(arm,ball,0); firetouchinterest(arm,ball,1) end) end
-				end
-			end
-		end)
-		if not silent and Notify then Notify("Auto Catch ON", 2) end
-	else
-		if not silent and Notify then Notify("Auto Catch OFF", 2) end
-	end
-	if UIControls.AutoCatch then pcall(function() UIControls.AutoCatch:Set(AutoCatch.Enabled) end) end
-end
-
 local reactTab = makeTab("React", "⚡")
 reactTab:Section("No React Decline", nil)
 UIControls.NRC = reactTab:Toggle("NRC", nil, false, function(v) SetNRCEnabled(v) end)
@@ -2697,9 +2649,7 @@ UIControls.ReactKiller = reactTab:Toggle("React Killer", nil, false, function(v)
 UIControls.ReactKiller_Fires = reactTab:Slider("Fires / frame", nil, 1, 100, 30, function(v) ReactKiller.Fires=v end)
 
 local toolsTab = makeTab("Tools", "🔧")
-toolsTab:Section("Auto Catch", nil)
-UIControls.AutoCatch = toolsTab:Toggle("Auto Catch", nil, false, function(v) SetAutoCatchEnabled(v) end)
-UIControls.AutoCatch_Distance = toolsTab:Slider("Catch Distance", nil, 1, 5, 5, function(v) AutoCatch.Distance=v end, " studs")
+toolsTab:Section("Ball Tools", nil)
 toolsTab:Button("Release Ball", false, function()
 	pcall(function() local c=GetCharacter(); local t=c and c:FindFirstChildOfClass("Tool"); if t then t:Unequip() end end)
 	Notify("Released", 2)
@@ -2733,7 +2683,7 @@ toolsTab:Button("Rejoin", false, function() TeleportService:Teleport(game.PlaceI
 ---------------------------------------------------------------------------
 local configsTab = makeTab("Configs", "💾")
 configsTab:Section("Save / Load", "Writes to executor workspace + ValkyrieConfigs/")
-configsTab:Label("Saves: reach toggles + all sliders, GK on/off, mobile btn positions/size, NRC, React Killer, Auto Catch, AntiBan, sky preset")
+configsTab:Label("Saves: reach toggles + all sliders, GK on/off, mobile btn positions/size, NRC, React Killer, AntiBan, sky preset")
 configsTab:Label("Files: workspace/valkyrie_tps_ulti.json  and  ValkyrieConfigs/tps_ulti.json")
 
 configsTab:Button("Save Config", true, function()
@@ -3075,10 +3025,6 @@ SyncUIFromState = function()
 		if ReactKiller then
 			set(UIControls.ReactKiller, ReactKiller.Enabled)
 			set(UIControls.ReactKiller_Fires, ReactKiller.Fires)
-		end
-		if AutoCatch then
-			set(UIControls.AutoCatch, AutoCatch.Enabled)
-			set(UIControls.AutoCatch_Distance, AutoCatch.Distance)
 		end
 		if AntiBan then set(UIControls.AntiBan, AntiBan.Enabled) end
 	end)
