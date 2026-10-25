@@ -1,4 +1,5 @@
 -- Valkyrie.ui | Fivelyss systems | red VEF shell | no key
+-- Configs tab + full workspace save/load (reach, sliders, GK, macros, anti-ban, tools)
 
 local Players, RunService, UserInputService, Lighting, Workspace,
       TeleportService, CoreGui, StarterGui, Stats, Debris, VirtualUser,
@@ -51,12 +52,16 @@ do
     ForceLocalScore = { Green = 0, Blue = 0, Enabled = false }
 end
 
-local CONFIG_DIR = "ValkyrieConfigs"
+---------------------------------------------------------------------------
+-- CONFIG SYSTEM  (workspace + ValkyrieConfigs folder)
+---------------------------------------------------------------------------
+local CONFIG_DIR  = "ValkyrieConfigs"
 local CONFIG_FILE = "tps_ulti.json"
-local CONFIG_FLAT = "valkyrie_tps_ulti.json"
+local CONFIG_FLAT = "valkyrie_tps_ulti.json"   -- always also written to executor workspace root
 local ConfigStore = {}
 local ConfigBindings = {}
 local PendingConfig = nil
+local LastLoadedName = CONFIG_FILE
 
 local function JsonEncode(tbl)
     local ok, res = pcall(function() return HttpService:JSONEncode(tbl) end)
@@ -71,12 +76,14 @@ local function JsonDecode(str)
 end
 
 local function EnsureConfigDir()
-    if makefolder then
-        pcall(function()
-            if isfolder and not isfolder(CONFIG_DIR) then makefolder(CONFIG_DIR) end
-            if not isfolder then makefolder(CONFIG_DIR) end
-        end)
-    end
+    if not makefolder then return end
+    pcall(function()
+        if isfolder then
+            if not isfolder(CONFIG_DIR) then makefolder(CONFIG_DIR) end
+        else
+            makefolder(CONFIG_DIR)
+        end
+    end)
 end
 
 local function udim2ToTable(u)
@@ -99,6 +106,12 @@ local function RegisterConfig(key, ctl, default, apply)
         if ctl and ctl.Set then pcall(function() ctl:Set(v) end) end
     end
 end
+
+-- forward decls used by Collect / Apply (filled later)
+local CC, reachSettings, GKHelper, StartGKHelper, StopGKHelper
+local CreateAllLimbHitboxes, RemoveAllLimbHitboxes, UpdateLimbVisualizer, LimbBodyParts
+local NRC, ReactKiller, AutoCatch, SkyboxCfg, ApplySkybox, RemoveCustomSky, ApplyLighting
+local ccSyncSizes, ccSyncOpacity, ccSyncLock, ccSyncVisible
 
 local function CollectMobilePositions()
     local positions = {}
@@ -167,18 +180,26 @@ end
 
 local function CollectConfigSnapshot()
     local data = {
-        version = 3,
+        version = 4,
         placeId = game.PlaceId,
+        savedAt = os.date("%Y-%m-%d %H:%M:%S"),
         mobile = {
             positions = CollectMobilePositions(),
             btn = nil,
             keepToSave = nil,
             mobEnabled = nil,
+            gkHudVisible = nil,
         },
         reach = nil,
         gk = nil,
+        antiban = nil,
+        nrc = nil,
+        reactKiller = nil,
+        autoCatch = nil,
+        sky = nil,
         extra = {},
     }
+
     pcall(function()
         if CC then
             data.mobile.btn = {
@@ -192,6 +213,7 @@ local function CollectConfigSnapshot()
             data.mobile.gkHudVisible = CC.gkHudVisible
         end
     end)
+
     pcall(function()
         if reachSettings then
             data.reach = {}
@@ -200,19 +222,65 @@ local function CollectConfigSnapshot()
             end
         end
     end)
+
     pcall(function()
         if GKHelper then
             data.gk = { Enabled = GKHelper.Enabled == true }
         end
     end)
+
+    pcall(function()
+        data.antiban = { Enabled = AntiBan.Enabled == true }
+    end)
+
+    pcall(function()
+        if NRC then
+            data.nrc = {
+                Enabled = NRC.Enabled == true,
+                Magnitude = NRC.Magnitude,
+                Distance = NRC.Distance,
+            }
+        end
+    end)
+
+    pcall(function()
+        if ReactKiller then
+            data.reactKiller = {
+                Enabled = ReactKiller.Enabled == true,
+                Fires = ReactKiller.Fires,
+                Distance = ReactKiller.Distance,
+            }
+        end
+    end)
+
+    pcall(function()
+        if AutoCatch then
+            data.autoCatch = {
+                Enabled = AutoCatch.Enabled == true,
+                Distance = AutoCatch.Distance,
+            }
+        end
+    end)
+
+    pcall(function()
+        if SkyboxCfg then
+            data.sky = {
+                Enabled = SkyboxCfg.Enabled == true,
+                Current = SkyboxCfg.Current,
+            }
+        end
+    end)
+
     for k, v in pairs(ConfigStore) do
         data.extra[k] = v
     end
+
     return data
 end
 
 local function ApplyConfigSnapshot(data)
     if type(data) ~= "table" then return end
+
     if data.mobile then
         if data.mobile.positions then
             ApplyMobilePositions(data.mobile.positions)
@@ -241,6 +309,7 @@ local function ApplyConfigSnapshot(data)
             end
         end)
     end
+
     pcall(function()
         if data.reach and reachSettings then
             for k, v in pairs(data.reach) do
@@ -252,11 +321,65 @@ local function ApplyConfigSnapshot(data)
             end
         end
     end)
+
     pcall(function()
         if data.gk and StartGKHelper and StopGKHelper then
-            if data.gk.Enabled then StartGKHelper() else StopGKHelper() end
+            if data.gk.Enabled then
+                if not GKHelper.Enabled then StartGKHelper() end
+            else
+                if GKHelper.Enabled then StopGKHelper() end
+            end
         end
     end)
+
+    pcall(function()
+        if data.antiban then
+            AntiBan.Enabled = data.antiban.Enabled == true
+        end
+    end)
+
+    pcall(function()
+        if data.nrc and NRC then
+            NRC.Magnitude = data.nrc.Magnitude or NRC.Magnitude
+            NRC.Distance  = data.nrc.Distance  or NRC.Distance
+            -- Enabled is applied via UI binding / feature toggles after UI mounts
+            if data.nrc.Enabled ~= nil then
+                ConfigStore.NRC_Enabled = data.nrc.Enabled
+            end
+        end
+    end)
+
+    pcall(function()
+        if data.reactKiller and ReactKiller then
+            ReactKiller.Fires    = data.reactKiller.Fires or ReactKiller.Fires
+            ReactKiller.Distance = data.reactKiller.Distance or ReactKiller.Distance
+            if data.reactKiller.Enabled ~= nil then
+                ConfigStore.ReactKiller_Enabled = data.reactKiller.Enabled
+            end
+        end
+    end)
+
+    pcall(function()
+        if data.autoCatch and AutoCatch then
+            AutoCatch.Distance = data.autoCatch.Distance or AutoCatch.Distance
+            if data.autoCatch.Enabled ~= nil then
+                ConfigStore.AutoCatch_Enabled = data.autoCatch.Enabled
+            end
+        end
+    end)
+
+    pcall(function()
+        if data.sky and SkyboxCfg then
+            SkyboxCfg.Current = data.sky.Current or SkyboxCfg.Current
+            SkyboxCfg.Enabled = data.sky.Enabled == true
+            if SkyboxCfg.Enabled and ApplySkybox then
+                ApplySkybox(SkyboxCfg.Current)
+            elseif not SkyboxCfg.Enabled and RemoveCustomSky then
+                RemoveCustomSky()
+            end
+        end
+    end)
+
     if type(data.extra) == "table" then
         for k, v in pairs(data.extra) do
             if ConfigBindings[k] then
@@ -266,7 +389,8 @@ local function ApplyConfigSnapshot(data)
             end
         end
     end
-    -- legacy flat format support
+
+    -- legacy flat format
     if data.mobilePositions then ApplyMobilePositions(data.mobilePositions) end
 end
 
@@ -281,9 +405,12 @@ local function SaveConfigToFile(name)
     local path = CONFIG_DIR .. "/" .. fileName
     local ok, err = pcall(function()
         writefile(path, encoded)
-        -- also drop a copy in executor workspace root for easy find
+        -- always also dump flat copy into executor workspace root
         pcall(function() writefile(CONFIG_FLAT, encoded) end)
+        -- also write the exact name into workspace root for easy find
+        pcall(function() writefile(fileName, encoded) end)
     end)
+    if ok then LastLoadedName = fileName end
     return ok, ok and path or tostring(err)
 end
 
@@ -293,14 +420,15 @@ local function LoadConfigFromFile(name)
     local fileName = (name and name ~= "") and name or CONFIG_FILE
     if not fileName:lower():find("%.json$") then fileName = fileName .. ".json" end
     local path = CONFIG_DIR .. "/" .. fileName
-    local content
+
     local function tryRead(p)
         if isfile and not isfile(p) then return nil end
         local ok, c = pcall(function() return readfile(p) end)
         if ok and type(c) == "string" and #c > 2 then return c end
         return nil
     end
-    content = tryRead(path) or tryRead(CONFIG_FLAT) or tryRead(fileName)
+
+    local content = tryRead(path) or tryRead(CONFIG_FLAT) or tryRead(fileName)
     if not content then
         PendingConfig = nil
         return false, "missing file"
@@ -309,26 +437,60 @@ local function LoadConfigFromFile(name)
     if next(decoded) == nil then return false, "bad json" end
     PendingConfig = decoded
     ApplyConfigSnapshot(decoded)
+    LastLoadedName = fileName
     return true, path
 end
 
 local function ListConfigFiles()
-    if not listfiles then return {} end
+    local out = {}
+    if not listfiles then return out end
     EnsureConfigDir()
     local ok, files = pcall(function() return listfiles(CONFIG_DIR) end)
-    return (ok and files) or {}
+    if ok and type(files) == "table" then
+        for _, f in ipairs(files) do
+            local name = tostring(f):match("([^/\\]+)$") or tostring(f)
+            if name:lower():find("%.json$") then
+                table.insert(out, name)
+            end
+        end
+    end
+    -- also check workspace root flat
+    pcall(function()
+        if isfile and isfile(CONFIG_FLAT) then
+            local already = false
+            for _, n in ipairs(out) do if n == CONFIG_FLAT then already = true break end end
+            if not already then table.insert(out, CONFIG_FLAT) end
+        end
+    end)
+    return out
+end
+
+local function DeleteConfigFile(name)
+    if not delfile then return false, "delfile not supported" end
+    local fileName = (name and name ~= "") and name or CONFIG_FILE
+    if not fileName:lower():find("%.json$") then fileName = fileName .. ".json" end
+    local path = CONFIG_DIR .. "/" .. fileName
+    local ok = pcall(function()
+        if isfile and isfile(path) then delfile(path) end
+        if isfile and isfile(fileName) then delfile(fileName) end
+    end)
+    return ok, path
 end
 
 getgenv().Valkyrie_Config = {
-    Store = ConfigStore,
-    Save = SaveConfigToFile,
-    Load = LoadConfigFromFile,
-    List = ListConfigFiles,
+    Store   = ConfigStore,
+    Save    = SaveConfigToFile,
+    Load    = LoadConfigFromFile,
+    List    = ListConfigFiles,
+    Delete  = DeleteConfigFile,
     Collect = CollectConfigSnapshot,
-    Apply = ApplyConfigSnapshot,
+    Apply   = ApplyConfigSnapshot,
 }
 getgenv().Fivelyss_Config = getgenv().Valkyrie_Config
 
+---------------------------------------------------------------------------
+-- ANTI-BAN / ANTI-KICK
+---------------------------------------------------------------------------
 do
     pcall(function()
         local mt = getrawmetatable(game)
@@ -386,6 +548,9 @@ do
     end)
 end
 
+---------------------------------------------------------------------------
+-- CHARACTER / BALL HELPERS
+---------------------------------------------------------------------------
 local GetCharacter, GetHumanoid, GetRoot, GetFE, ResetVelocity, IsBall
 local FindAllBalls, GetMainBall, GetPracticeBalls, GetBallList
 
@@ -578,12 +743,13 @@ do
     end)
 end
 
+---------------------------------------------------------------------------
+-- LIMB REACH
+---------------------------------------------------------------------------
 local LimbHitboxes, LimbVisualizers, LimbActiveTouches,
-      LimbBodyParts, reachSettings,
       SafeClear, GetReachDistanceForPart, CreateLimbHitbox,
-      GetVisTransparencyFor, UpdateLimbVisualizer, RefreshVisTransparency,
-      FindBallPartLimb, CreateAllLimbHitboxes, RemoveAllLimbHitboxes,
-      CheckLimbBallCollisions
+      GetVisTransparencyFor, RefreshVisTransparency,
+      FindBallPartLimb, CheckLimbBallCollisions
 
 do
     LimbHitboxes = {}
@@ -785,7 +951,10 @@ do
     end)
 end
 
-local CC, ccRunCombo, ccSyncSizes, ccSyncOpacity, ccSyncLock, ccSyncVisible
+---------------------------------------------------------------------------
+-- MOBILE GK BUTTONS + MACROS
+---------------------------------------------------------------------------
+local ccRunCombo
 local CC_DEFAULT_POS, ccRefs
 
 do
@@ -951,7 +1120,6 @@ do
         for _, r in pairs(ccRefs) do
             if r.btn then r.btn.Visible = true end
         end
-        -- restore positions from disk if already loaded, else try load now
         pcall(function()
             if PendingConfig and PendingConfig.mobile and PendingConfig.mobile.positions then
                 ApplyMobilePositions(PendingConfig.mobile.positions)
@@ -995,7 +1163,6 @@ do
     end
     getgenv().Valkyrie_SetGkHud = setGkHudVisible
 
-    -- always-on eye button (does not hide with the GK HUD)
     do
         local eyeOld = ccGui:FindFirstChild("ccEyeToggle")
         if eyeOld then eyeOld:Destroy() end
@@ -1063,23 +1230,26 @@ do
     end
 end
 
---  8.5 GK HELPER (BlueGoal/GreenGoal, air-tracking, lag-fixed)
-local GKHelper, GK_CONFIG
-local StartGKHelper, StopGKHelper, CleanupGKHelper
+---------------------------------------------------------------------------
+-- GK HELPER
+---------------------------------------------------------------------------
+local GK_CONFIG
+local CleanupGKHelper
+
 do
     GK_CONFIG = {
         GOAL_WIDTH = 42,
         PITCH_GROUND_Y = 5.5,
         BALL_SPEED_THRESHOLD = 2.8,
-        FAST_SHOT_SPEED = 55,         -- treat as hard shot above this
-        BLAST_SHOT_SPEED = 85,        -- rocket shot threshold
+        FAST_SHOT_SPEED = 55,
+        BLAST_SHOT_SPEED = 85,
         PREDICTION_MAX_T = 7.0,
         TRIGGER_T = 5.5,
         EARLY_T = 7.0,
         MOVE_SPEED = 110,
         EARLY_SPEED = 95,
-        FAST_MOVE_SPEED = 130,        -- hard shots
-        BLAST_MOVE_SPEED = 150,       -- rockets
+        FAST_MOVE_SPEED = 130,
+        BLAST_MOVE_SPEED = 150,
         ORIGINAL_SPEED = 20,
         GK_BASE_OFFSET = 1.5,
         MAX_COMMIT = 42,
@@ -1100,9 +1270,9 @@ do
         RETREAT_LOW_STRAIGHT = 1.2,
         FORWARD_BLEND = 0.45,
         LAT_SMOOTH = 0.55,
-        LAT_SMOOTH_FAST = 0.78,       -- less lag on hard shots
+        LAT_SMOOTH_FAST = 0.78,
         CLOSE_LEAD = 0.5,
-        BOOST_MAX = 175,              -- panic HRP shove cap
+        BOOST_MAX = 175,
         BOOST_MAX_BLAST = 210,
     }
 
@@ -1125,7 +1295,6 @@ do
         SmoothLat = nil,
     }
 
-    -- Generous GK box — if you're nearer this goal than the other, count as GK
     local GK_ZONE_DEPTH = 75
     local GK_ZONE_WIDTH = 48
 
@@ -1149,8 +1318,6 @@ do
         if not pos then return nil end
         local useZ = math.abs(pos.Z) >= math.abs(pos.X)
         local value = useZ and pos.Z or pos.X
-        -- Sign from WHERE YOU STAND relative to the goal line:
-        -- if you're on the field side with smaller axis than goal, ball needs +vel to reach it
         local sign
         if hrpPos then
             local hAxis = useZ and hrpPos.Z or hrpPos.X
@@ -1188,19 +1355,16 @@ do
         local greenInfo = extractGoalInfo(green, hp)
         if not blueInfo and not greenInfo then return nil end
 
-        -- nearest goal by axis distance (you are the GK of the closer end)
         if blueInfo and greenInfo then
             local hAxis = (blueInfo.Axis == "Z") and hp.Z or hp.X
             local dBlue = math.abs(hAxis - blueInfo.Value)
             local dGreen = math.abs(hAxis - greenInfo.Value)
             local closer = (dBlue <= dGreen) and blueInfo or greenInfo
             local closerDist = math.min(dBlue, dGreen)
-            -- must be on this half of the pitch (closer end) and not crazy far
             if closerDist <= GK_ZONE_DEPTH then
                 GKHelper.GoalPart = closer.Part
                 return closer
             end
-            -- fallback: still pick closer if within expanded range
             if closerDist <= GK_ZONE_DEPTH * 1.6 then
                 GKHelper.GoalPart = closer.Part
                 return closer
@@ -1216,40 +1380,26 @@ do
         return nil
     end
 
-    -- TRUE approach test: is the ball closing distance to our goal?
     local function isBallTowardOurGoal(ballPos, ballVel, info)
         if not info or not info.Pos then return false end
-
         local goalPos = info.Pos
         local toGoal = goalPos - ballPos
         local dist = toGoal.Magnitude
-        if dist < 2 then return false end -- already at / in goal object
-
-        -- closing speed toward the goal object (works for any pitch orientation)
+        if dist < 2 then return false end
         local closeSpeed = ballVel:Dot(toGoal.Unit)
-
-        -- axis plane check: still on field side of the line
         local pAxis = (info.Axis == "Z") and ballPos.Z or ballPos.X
         local vAxis = (info.Axis == "Z") and ballVel.Z or ballVel.X
         local d = info.Value - pAxis
-        -- past the line into net → stop
         if info.Sign > 0 and d < -3 then return false end
         if info.Sign < 0 and d > 3 then return false end
-
-        -- primary: moving closer to goal
         if closeSpeed >= 0.35 then return true end
-
-        -- axis fallback (soft)
         if info.Sign > 0 and vAxis >= 0.25 and d > 0 then return true end
         if info.Sign < 0 and vAxis <= -0.25 and d < 0 then return true end
-
-        -- high ball on our half even with weak closeSpeed
         local high = ballPos.Y >= (GK_CONFIG.HIGH_BALL_Y or 9) or ballVel.Y > 1.2
         if high and dist < (GK_CONFIG.FAR_PRE_RANGE or 140) and closeSpeed > -1 then
             if info.Sign > 0 and d > 0 then return true end
             if info.Sign < 0 and d < 0 then return true end
         end
-
         return false
     end
 
@@ -1276,21 +1426,17 @@ do
         return Vector3.new(px, py, pz), t
     end
 
-    -- depth: high straight = small back, low straight = tiny back, else forward / wide retreat
     local function resolveDepth(cur, ballAxis, sign, latAbs, isHigh)
         local base = GKHelper.GoalValue - sign * GK_CONFIG.GK_BASE_OFFSET
         local maxRet = GK_CONFIG.MAX_RETREAT or 14
         local fwd = GK_CONFIG.FORWARD_BLEND or 0.45
         local depth = cur
-
         local ballInFront = (sign > 0 and ballAxis < cur - 0.5) or (sign < 0 and ballAxis > cur + 0.5)
         local ballBehind = (sign > 0 and ballAxis > cur + 0.5) or (sign < 0 and ballAxis < cur - 0.5)
         local straight = latAbs < 7
 
         if straight and ballInFront then
-            -- still allow a bit of forward when ball is out in front
             depth = cur + (ballAxis - cur) * (fwd * 0.55)
-            -- then a controlled tiny/small step back toward the line
             local ret = isHigh and (GK_CONFIG.RETREAT_HIGH_STRAIGHT or 4.5) or (GK_CONFIG.RETREAT_LOW_STRAIGHT or 1.2)
             if sign > 0 then
                 depth = math.min(depth + ret * 0.35, cur + ret)
@@ -1298,7 +1444,6 @@ do
                 depth = math.max(depth - ret * 0.35, cur - ret)
             end
         elseif straight and not ballInFront then
-            -- straight but already on you: setback only
             local ret = isHigh and (GK_CONFIG.RETREAT_HIGH_STRAIGHT or 4.5) or (GK_CONFIG.RETREAT_LOW_STRAIGHT or 1.2)
             if sign > 0 then depth = cur + ret else depth = cur - ret end
         elseif ballInFront and latAbs < 14 then
@@ -1318,35 +1463,26 @@ do
         return depth
     end
 
-    -- lateral aim: velocity lead on close shots + smooth so micro-curves don't flip side
     local function resolveLateral(ballPos, vel, pred, ttg, axis)
         local half = GK_CONFIG.GOAL_WIDTH * 0.48
         local live = (axis == "Z") and ballPos.X or ballPos.Z
         local vLat = (axis == "Z") and vel.X or vel.Z
         local predLat = pred and ((axis == "Z") and pred.X or pred.Z) or live
-
-        -- velocity lead point (where ball is going, not where a tiny curve flick points for a frame)
         local leadT = GK_CONFIG.CLOSE_LEAD or 0.55
         if ttg then leadT = math.clamp(ttg * 0.65, 0.18, 0.85) end
         local lead = live + vLat * leadT
-
-        -- far: trust long prediction more; close: trust lead + live, less pure pred
         local close = (ttg and ttg < 1.1) or false
         local raw
         if close then
-            -- close shot: 55% velocity-lead, 25% live, 20% pred — resists last-moment curve flip
             raw = lead * 0.55 + live * 0.25 + predLat * 0.20
         else
             local blend = 0.4
             if ttg and ttg < 2.0 then blend = 0.55 end
             if ttg and ttg < 1.4 then blend = 0.7 end
             raw = live * (1 - blend) + predLat * blend
-            -- still mix a bit of lead so we're not pure-position lagging
             raw = raw * 0.75 + lead * 0.25
         end
-
         raw = math.clamp(raw, -half, half)
-
         local ballSpeed = vel.Magnitude
         local sm = GK_CONFIG.LAT_SMOOTH or 0.55
         if ballSpeed >= (GK_CONFIG.BLAST_SHOT_SPEED or 85) then
@@ -1367,23 +1503,18 @@ do
         return math.clamp(GKHelper.SmoothLat, -half, half)
     end
 
-    -- Fast nearest-ball from tracked list / GetBallList / GetMainBall. No full Workspace:GetDescendants.
     local function getNearestBall(hrpPos)
         local now = os.clock()
         if GKHelper.CachedBall and GKHelper.CachedBall.Parent and (now - GKHelper.LastBallRefresh) < GK_CONFIG.BALL_REFRESH_INTERVAL then
             return GKHelper.CachedBall
         end
-
         local best, bestD = nil, 200 * 200
         local list = GetBallList()
-        if #list == 0 and #TrackedBalls > 0 then
-            list = TrackedBalls
-        end
+        if #list == 0 and #TrackedBalls > 0 then list = TrackedBalls end
         if #list == 0 then
             local main = GetMainBall()
             if main then list = { main } end
         end
-
         for i = 1, #list do
             local inst = list[i]
             if inst and inst.Parent and inst:IsA("BasePart") then
@@ -1392,13 +1523,9 @@ do
                 local dy = p.Y - hrpPos.Y
                 local dz = p.Z - hrpPos.Z
                 local d = dx*dx + dy*dy + dz*dz
-                if d < bestD then
-                    bestD = d
-                    best = inst
-                end
+                if d < bestD then bestD = d; best = inst end
             end
         end
-
         GKHelper.CachedBall = best
         GKHelper.LastBallRefresh = now
         return best
@@ -1425,27 +1552,21 @@ do
     StartGKHelper = function()
         if GKHelper.Enabled then return end
         CleanupGKHelper()
-
         local hrp = GetRoot()
         if not hrp then Notify("GK Helper: no character", 3) return end
-
         local blue, green = getGoalObjects()
         if not blue and not green then
             Notify("GK Helper: no BlueGoal or GreenGoal found", 4)
             return
         end
-
-        -- may be nil until you stand in front of a goal — loop re-picks every frame
         local info = pickOurGoal(hrp)
         if info then
             GKHelper.GoalAxis = info.Axis
             GKHelper.GoalValue = info.Value
             GKHelper.GoalSign = info.Sign
         end
-
         local hum = GetHumanoid()
         if hum then GKHelper.OriginalSpeed = hum.WalkSpeed end
-
         local parent = Workspace:FindFirstChild("Debris") or Workspace
 
         local ring = Instance.new("Part")
@@ -1477,17 +1598,14 @@ do
         GKHelper.Enabled = true
         local idleReturnAccum = 0
 
-        -- Heartbeat instead of RenderStepped: same logic, far less cost
         GKHelper.Conn = RunService.Heartbeat:Connect(function(dt)
             if not GKHelper.Enabled then return end
             local hum = Cache.Humanoid
             local hrp = Cache.Root
             if not hum or not hrp or not hum.Parent then return end
 
-            -- always re-pick from Workspace.BlueGoal / GreenGoal based on where you stand
             local info2 = pickOurGoal(hrp)
             if not info2 then
-                -- not in front of either goal → stop helping
                 if GKHelper.IsMoving then
                     hum.WalkSpeed = GKHelper.OriginalSpeed
                     pcall(function() hum:Move(Vector3.zero) end)
@@ -1524,7 +1642,6 @@ do
             local speed = vel.Magnitude
             local ballPos = ball.Position
 
-            -- still ball → never move (no creep toward parked balls)
             if speed < (GK_CONFIG.BALL_SPEED_THRESHOLD or 2.8) then
                 if GKHelper.IsMoving then
                     hum.WalkSpeed = GKHelper.OriginalSpeed
@@ -1538,11 +1655,9 @@ do
                 return
             end
 
-            -- predict first so we can still commit if path is clear even when toward-gate is soft
             local pred, ttg = predict(ballPos, vel, GKHelper.GoalValue, GKHelper.GoalSign, GKHelper.GoalAxis, speed)
             local toward = isBallTowardOurGoal(ballPos, vel, info2)
 
-            -- only idle-out if ball is clearly NOT coming AND no useful prediction
             if not toward and not (pred and ttg and ttg < GK_CONFIG.EARLY_T) then
                 if GKHelper.IsMoving then
                     GKHelper.LastTargetAge = GKHelper.LastTargetAge + dt
@@ -1558,13 +1673,10 @@ do
             end
 
             local heightAboveGK = ballPos.Y - hrp.Position.Y
-
-            -- high ball: above GK by AIR_FOLLOW_HEIGHT, rising, or absolute height
             local inAir = (heightAboveGK > GK_CONFIG.AIR_FOLLOW_HEIGHT)
                 or (vel.Y > 1.5)
                 or (ballPos.Y > GK_CONFIG.HIGH_BALL_Y)
             GKHelper.AirMode = inAir
-
             local isHigh = inAir
                 or (pred and pred.Y >= GK_CONFIG.HIGH_BALL_Y)
                 or (ballPos.Y >= GK_CONFIG.HIGH_BALL_Y)
@@ -1585,7 +1697,6 @@ do
                 end
                 doMove = true
                 useFullSpeed = true
-
                 local ringX = pred and pred.X or ballPos.X
                 local ringZ = pred and pred.Z or ballPos.Z
                 if GKHelper.PredCircle then
@@ -1594,7 +1705,6 @@ do
                 if GKHelper.InnerRing then
                     GKHelper.InnerRing.CFrame = CFrame.new(ringX, GK_CONFIG.PITCH_GROUND_Y + 0.25, ringZ) * CFrame.Angles(0, 0, math.rad(90))
                 end
-
             elseif pred and ttg then
                 local lat = resolveLateral(ballPos, vel, pred, ttg, GKHelper.GoalAxis)
                 if GKHelper.GoalAxis == "Z" then
@@ -1606,7 +1716,6 @@ do
                     local latAbs = math.abs(lat - hrp.Position.Z)
                     targetX = resolveDepth(hrp.Position.X, ballPos.X, GKHelper.GoalSign, latAbs, isHigh)
                 end
-
                 if ttg < GK_CONFIG.TRIGGER_T then
                     doMove = true
                     useFullSpeed = true
@@ -1616,7 +1725,6 @@ do
                 else
                     doMove = false
                 end
-
                 if doMove then
                     if GKHelper.PredCircle then
                         GKHelper.PredCircle.CFrame = CFrame.new(pred.X, GK_CONFIG.PITCH_GROUND_Y + 0.2, pred.Z) * CFrame.Angles(0, 0, math.rad(90))
@@ -1655,7 +1763,6 @@ do
                 local target = Vector3.new(targetX, hrp.Position.Y, targetZ)
                 GKHelper.LastTarget = target
                 GKHelper.LastTargetAge = 0
-
                 local fastShot = speed >= (GK_CONFIG.FAST_SHOT_SPEED or 55)
                 local blastShot = speed >= (GK_CONFIG.BLAST_SHOT_SPEED or 85)
 
@@ -1681,7 +1788,6 @@ do
                     if hum.WalkSpeed ~= spd then hum.WalkSpeed = spd end
                     hum:MoveTo(target)
 
-                    -- hard/fast shots: boost earlier and harder so we aren't late
                     local urgent = (ttg and ttg < 1.6)
                         or (fastShot and ttg and ttg < 2.2)
                         or (blastShot)
@@ -1712,7 +1818,6 @@ do
                             hrp.AssemblyLinearVelocity = Vector3.new(dir.X * boost, curY, dir.Z * boost)
                         end
                     end
-
                     GKHelper.IsMoving = true
                 else
                     if GKHelper.IsMoving then
@@ -1743,9 +1848,7 @@ do
         CleanupGKHelper()
     end
 
-    -- ----------------------------------------------------------
-    -- Mobile on-screen toggle for GK Helper
-    -- ----------------------------------------------------------
+    -- Mobile GK toggle button
     do
         local parentGui = nil
         pcall(function()
@@ -1853,7 +1956,6 @@ do
             if u then btn.Position = u end
         end
 
-        -- keep label in sync if toggled from menu
         task.spawn(function()
             while btn and btn.Parent do
                 refreshBtn()
@@ -1868,7 +1970,9 @@ do
     end
 end
 
---  VALKYRIE.UI  —  Fivelyss systems · Valkyrie shell
+---------------------------------------------------------------------------
+-- UI SHELL
+---------------------------------------------------------------------------
 local TweenService = game:GetService("TweenService")
 
 local P = {
@@ -2005,7 +2109,6 @@ local function drag(handle, target)
 	end)
 end
 
--- drag from near any edge of the window (mobile: top/bottom/left/right)
 local function enableEdgeWindowDrag(target, margin)
 	margin = margin or 36
 	local dragging, startMouse, startPos
@@ -2041,7 +2144,6 @@ local function enableEdgeWindowDrag(target, margin)
 	end)
 end
 
--- destroy old shells only — never touch Fivelyss_MobileGK (macros + GK btn)
 for _, root in ipairs({ (gethui and gethui()) or nil, CoreGui, LocalPlayer:FindFirstChild("PlayerGui") }) do
 	if root then
 		pcall(function()
@@ -2118,7 +2220,6 @@ doMinimize = function(force)
 	end
 end
 
--- orb + mobile bar declared early so show/hide can touch them
 local ORB = isTouch() and 56 or 48
 local orb = Instance.new("TextButton"); orb.Name = "Orb"; orb.Size = UDim2.fromOffset(ORB,ORB)
 orb.Position = UDim2.new(0,16,0.55,0); orb.BackgroundColor3 = P.bg; orb.AutoButtonColor = false; orb.Text = ""
@@ -2181,7 +2282,6 @@ local side = bx(main, P.rail, 3); side.BackgroundTransparency = 0.05
 side.Size = UDim2.new(0,SIDE,1,-TOP); side.Position = UDim2.new(0,0,0,TOP)
 side.Active = true; side.Selectable = true; drag(side, main)
 
--- bottom drag strip
 local bottom = bx(main, P.top, 8)
 bottom.BackgroundTransparency = 0.35
 bottom.Size = UDim2.new(1, 0, 0, 22)
@@ -2197,21 +2297,18 @@ grip.Size = UDim2.fromScale(1, 1)
 grip.TextXAlignment = Enum.TextXAlignment.Center
 grip.ZIndex = 10
 
--- right edge drag strip
 local rightEdge = fr(main, 8)
 rightEdge.Size = UDim2.new(0, 18, 1, -TOP - 22)
 rightEdge.Position = UDim2.new(1, -18, 0, TOP)
 rightEdge.Active = true; rightEdge.Selectable = true
 drag(rightEdge, main)
 
--- left edge under side (thin extra)
 local leftEdge = fr(main, 8)
 leftEdge.Size = UDim2.new(0, 10, 1, -TOP - 22)
 leftEdge.Position = UDim2.new(0, 0, 0, TOP)
 leftEdge.Active = true; leftEdge.Selectable = true
 drag(leftEdge, main)
 
--- drag from any edge (top / bottom / left / right) — works on mobile + PC
 enableEdgeWindowDrag(main, 40)
 
 local nav = Instance.new("ScrollingFrame"); nav.BackgroundTransparency = 1; nav.BorderSizePixel = 0
@@ -2265,7 +2362,7 @@ local function makeTab(name, icon)
 		local s = fr(page, 3); s.Size = UDim2.new(1,-4,0,desc and 40 or 24); s.LayoutOrder = rows
 		local l2 = tx(s, titleText, F_B, 15, P.text); l2.Size = UDim2.new(1,-8,0,18); l2.Position = UDim2.fromOffset(2,2); l2.ZIndex = 4
 		if desc then
-			local d = tx(s, desc, F_R, 11, P.dim); d.Size = UDim2.new(1,-8,0,14); d.Position = UDim2.fromOffset(2,22); d.ZIndex = 4
+			local d = tx(s, titleText, F_R, 11, P.dim); d.Size = UDim2.new(1,-8,0,14); d.Position = UDim2.fromOffset(2,22); d.ZIndex = 4
 		end
 	end
 	function tab:Label(text)
@@ -2366,7 +2463,6 @@ local function makeTab(name, icon)
 end
 
 Notify = function(text, duration)
-	-- duration number (Fivelyss) or kind string (Valkyrie)
 	local kind = "good"
 	local sec = 3
 	if type(duration) == "string" then kind = duration; sec = 3
@@ -2380,9 +2476,12 @@ Notify = function(text, duration)
 	end)
 end
 
+---------------------------------------------------------------------------
+-- TABS
+---------------------------------------------------------------------------
 local statusTab = makeTab("Status", "◆")
 statusTab:Section("Valkyrie.ui", "Fivelyss systems · TPS / MPS")
-statusTab:Label("v2.8 · air-tracking GK · limb reach · react · tools")
+statusTab:Label("v2.9 · configs tab · workspace save · air-tracking GK · limb reach")
 statusTab:Label("Toggle menu: RightControl  ·  Mobile: top orb + GK button")
 statusTab:Label("Player: "..LocalPlayer.Name.."  ·  Place: "..tostring(game.PlaceId))
 
@@ -2434,8 +2533,14 @@ gkTab:Slider("Keep→Save Gap", nil, 0, 0.5, 0.08, function(v) CC.keepToSave=v e
 gkTab:Button("Test Keep+Save", false, function() ccRunCombo("KeepSave") end)
 gkTab:Button("Test Jump+Keep+Save", false, function() ccRunCombo("JumpKeepSave") end)
 
+---------------------------------------------------------------------------
+-- REACT / TOOLS / SKY / PERF / PROTECT  (feature tables defined here so config can see them)
+---------------------------------------------------------------------------
+NRC = { Enabled=false, Magnitude=4, Fires=2, Distance=15, Conn=nil }
+ReactKiller = { Enabled=false, Fires=30, Distance=20, Conn=nil }
+AutoCatch = { Enabled=false, Distance=15, Conn=nil }
+
 local reactTab = makeTab("React", "⚡")
-local NRC = { Enabled=false, Magnitude=4, Fires=2, Distance=15, Conn=nil }
 reactTab:Section("No React Decline", nil)
 reactTab:Toggle("NRC", nil, false, function(v)
 	NRC.Enabled=v
@@ -2468,7 +2573,6 @@ reactTab:Button("Universal React", true, function() FireUniversalReact(8); Notif
 reactTab:Button("Main React", false, function() FireUniversalReact(10); Notify("Main", 2) end)
 reactTab:Button("Break React", false, function() FireUniversalReact(15); Notify("Break", 2) end)
 reactTab:Button("Defence React", false, function() FireUniversalReact(6); Notify("Defence", 2) end)
-local ReactKiller = { Enabled=false, Fires=30, Distance=20, Conn=nil }
 reactTab:Section("React Killer", nil)
 reactTab:Toggle("React Killer", nil, false, function(v)
 	ReactKiller.Enabled=v
@@ -2496,7 +2600,6 @@ end)
 reactTab:Slider("Fires / frame", nil, 1, 100, 30, function(v) ReactKiller.Fires=v end)
 
 local toolsTab = makeTab("Tools", "🔧")
-local AutoCatch = { Enabled=false, Distance=15, Conn=nil }
 toolsTab:Section("Auto Catch", nil)
 toolsTab:Toggle("Auto Catch", nil, false, function(v)
 	AutoCatch.Enabled=v
@@ -2548,14 +2651,21 @@ toolsTab:Toggle("Unlimited Stamina", nil, false, function(v)
 	else Notify("Unlimited Stamina OFF", 2) end
 end)
 toolsTab:Button("Rejoin", false, function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
-toolsTab:Section("Config", "Saves mobile positions + reach + GK across games")
-toolsTab:Label("Workspace: valkyrie_tps_ulti.json + ValkyrieConfigs/tps_ulti.json")
-toolsTab:Label("👁 eye button hides/shows K1+SAVE, JUMP, GK Helper")
-toolsTab:Button("Save Config", true, function()
+
+---------------------------------------------------------------------------
+-- CONFIGS TAB  (new)
+---------------------------------------------------------------------------
+local configsTab = makeTab("Configs", "💾")
+configsTab:Section("Save / Load", "Writes to executor workspace + ValkyrieConfigs/")
+configsTab:Label("Saves: reach toggles + all sliders, GK on/off, mobile btn positions/size, NRC, React Killer, Auto Catch, AntiBan, sky preset")
+configsTab:Label("Files: workspace/valkyrie_tps_ulti.json  and  ValkyrieConfigs/tps_ulti.json")
+
+configsTab:Button("Save Config", true, function()
 	local ok, res = SaveConfigToFile(CONFIG_FILE)
 	Notify(ok and ("Saved · "..tostring(res)) or ("Fail · "..tostring(res)), ok and 3 or 4)
 end)
-toolsTab:Button("Load Config", false, function()
+
+configsTab:Button("Load Config", false, function()
 	local ok, res = LoadConfigFromFile(CONFIG_FILE)
 	if ok then
 		task.defer(function()
@@ -2564,7 +2674,8 @@ toolsTab:Button("Load Config", false, function()
 	end
 	Notify(ok and ("Loaded · "..tostring(res)) or ("Fail · "..tostring(res)), ok and 3 or 4)
 end)
-toolsTab:Button("Save Positions Now", false, function()
+
+configsTab:Button("Save Positions Now", false, function()
 	pcall(function()
 		if CC and ccRefs then
 			for id, r in pairs(ccRefs) do
@@ -2576,8 +2687,60 @@ toolsTab:Button("Save Positions Now", false, function()
 	Notify(ok and "Positions saved" or ("Fail · "..tostring(res)), ok and 2 or 3)
 end)
 
+configsTab:Section("Named Slots", "Cycle or pick a name then Save As / Load")
+local namedSlot = "slot1"
+local namedDrop = configsTab:Dropdown("Slot Name", {
+	"slot1", "slot2", "slot3", "slot4", "slot5",
+	"main", "gk", "reach", "mobile", "backup"
+}, "slot1", function(v) namedSlot = v end)
+
+configsTab:Button("Save As Selected Slot", true, function()
+	local name = namedSlot
+	if not name or name == "" then name = "slot1" end
+	local ok, res = SaveConfigToFile(name)
+	Notify(ok and ("Saved as "..name) or ("Fail · "..tostring(res)), ok and 3 or 4)
+end)
+
+configsTab:Button("Load Selected Slot", false, function()
+	local name = namedSlot
+	if not name or name == "" then name = "slot1" end
+	local ok, res = LoadConfigFromFile(name)
+	if ok then
+		task.defer(function()
+			if PendingConfig then ApplyConfigSnapshot(PendingConfig) end
+		end)
+	end
+	Notify(ok and ("Loaded "..name) or ("Fail · "..tostring(res)), ok and 3 or 4)
+end)
+
+configsTab:Button("List Config Files", false, function()
+	local files = ListConfigFiles()
+	if #files == 0 then
+		Notify("No config files found", 3)
+	else
+		Notify("Files: "..table.concat(files, " · "), 5)
+		print("[Valkyrie Configs]")
+		for _, f in ipairs(files) do print("  ", f) end
+	end
+end)
+
+configsTab:Button("Delete Selected Slot", false, function()
+	local name = namedSlot
+	if not name or name == "" then name = "slot1" end
+	local ok, res = DeleteConfigFile(name)
+	Notify(ok and ("Deleted "..name) or ("Fail · "..tostring(res)), ok and 3 or 4)
+end)
+
+configsTab:Section("Paths", nil)
+configsTab:Label("Primary: ValkyrieConfigs/tps_ulti.json")
+configsTab:Label("Flat copy: valkyrie_tps_ulti.json (workspace root)")
+configsTab:Label("Also writes the exact filename into workspace root on every save.")
+
+---------------------------------------------------------------------------
+-- SKY / PERF / PROTECT / MENU
+---------------------------------------------------------------------------
 local skyTab = makeTab("Sky", "☁")
-local SkyboxCfg = { Enabled = false, Current = "Default", OriginalSky = nil, OriginalSkyParent = nil }
+SkyboxCfg = { Enabled = false, Current = "Default", OriginalSky = nil, OriginalSkyParent = nil }
 pcall(function()
 	local sky = Lighting:FindFirstChildOfClass("Sky")
 	if sky then
@@ -2673,7 +2836,7 @@ local LightingPresets = {
 	end,
 }
 
-local function RemoveCustomSky()
+RemoveCustomSky = function()
 	pcall(function()
 		local e = Lighting:FindFirstChild("Valkyrie_Sky")
 		if e then e:Destroy() end
@@ -2682,7 +2845,7 @@ local function RemoveCustomSky()
 	end)
 end
 
-local function ApplySkybox(name)
+ApplySkybox = function(name)
 	SkyboxCfg.Current = name or "Default"
 	RemoveCustomSky()
 	if name == "Default" or not SkyPresets[name] or not SkyPresets[name].faces then
@@ -2709,7 +2872,7 @@ local function ApplySkybox(name)
 	sky.Parent = Lighting
 end
 
-local function ApplyLighting(name)
+ApplyLighting = function(name)
 	local fn = LightingPresets[name]
 	if fn then pcall(fn) end
 end
@@ -2799,12 +2962,13 @@ UserInputService.InputBegan:Connect(function(Input, Processed)
 	end
 end)
 
+-- auto-load on boot
 task.defer(function()
-	task.wait(0.4)
+	task.wait(0.5)
 	pcall(function()
 		local ok = LoadConfigFromFile(CONFIG_FILE)
 		if ok then
-			task.wait(0.3)
+			task.wait(0.35)
 			if PendingConfig then ApplyConfigSnapshot(PendingConfig) end
 			Notify("Config loaded", 2)
 		end
@@ -2823,7 +2987,6 @@ local function boot(steps, onDone)
 	local shade = bx(bg, Color3.new(0,0,0), 1); shade.Size = UDim2.fromScale(1,1); shade.BackgroundTransparency = 1
 	local stage = fr(bg, 3); stage.AnchorPoint = Vector2.new(0.5,0.5); stage.Position = UDim2.fromScale(0.5,0.5); stage.Size = UDim2.fromOffset(340,280)
 
-	-- orbit dots
 	local dots = {}
 	for i = 1, 10 do
 		local d = bx(stage, P.accent, 4)
@@ -2831,7 +2994,6 @@ local function boot(steps, onDone)
 		d.BackgroundTransparency = 1; corner(d, 5); dots[i] = d
 	end
 
-	-- center mark
 	local mark = bx(stage, P.accent, 5)
 	mark.AnchorPoint = Vector2.new(0.5,0); mark.Position = UDim2.new(0.5,0,0,42)
 	mark.Size = UDim2.fromOffset(64,64); mark.BackgroundTransparency = 0.15; corner(mark, 32)
@@ -2900,6 +3062,7 @@ boot({
 	"loading reach",
 	"wiring gk systems",
 	"syncing theme",
+	"loading configs",
 	"ready",
 }, function()
 	Notify("Valkyrie.ui loaded", "good")
@@ -2936,4 +3099,4 @@ boot({
 	end)
 end)
 
-print("[Valkyrie.ui] Fivelyss systems online · red theme")
+print("[Valkyrie.ui] Fivelyss systems online · red theme · Configs tab live")
