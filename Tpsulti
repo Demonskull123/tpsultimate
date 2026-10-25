@@ -110,11 +110,12 @@ end
 -- forward decls used by Collect / Apply (filled later)
 local CC, reachSettings, GKHelper, StartGKHelper, StopGKHelper
 local CreateAllLimbHitboxes, RemoveAllLimbHitboxes, UpdateLimbVisualizer, LimbBodyParts
-local NRC, ReactKiller, SkyboxCfg, ApplySkybox, RemoveCustomSky, ApplyLighting
+local NRC, ReactKiller, AutoCatch, SkyboxCfg, ApplySkybox, RemoveCustomSky, ApplyLighting
 local ccSyncSizes, ccSyncOpacity, ccSyncLock, ccSyncVisible
+local CircleReach, SetCircleReachEnabled, UpdateCircleReachVisual
 local UIControls = {}
 local SyncUIFromState
-local SetNRCEnabled, SetReactKillerEnabled
+local SetNRCEnabled, SetReactKillerEnabled, SetAutoCatchEnabled
 
 local function CollectMobilePositions()
     local positions = {}
@@ -198,6 +199,8 @@ local function CollectConfigSnapshot()
         antiban = nil,
         nrc = nil,
         reactKiller = nil,
+        autoCatch = nil,
+        circleReach = nil,
         sky = nil,
         extra = {},
     }
@@ -251,6 +254,27 @@ local function CollectConfigSnapshot()
                 Enabled = ReactKiller.Enabled == true,
                 Fires = ReactKiller.Fires,
                 Distance = ReactKiller.Distance,
+            }
+        end
+    end)
+
+    pcall(function()
+        if AutoCatch then
+            data.autoCatch = {
+                Enabled = AutoCatch.Enabled == true,
+                Distance = AutoCatch.Distance,
+            }
+        end
+    end)
+
+    pcall(function()
+        if CircleReach then
+            data.circleReach = {
+                Enabled = CircleReach.Enabled == true,
+                Radius = CircleReach.Radius,
+                Visible = CircleReach.Visible == true,
+                Transparency = CircleReach.Transparency,
+                Mode = CircleReach.Mode or "Both",
             }
         end
     end)
@@ -369,6 +393,45 @@ local function ApplyConfigSnapshot(data)
             elseif data.reactKiller.Enabled ~= nil then
                 ReactKiller.Enabled = data.reactKiller.Enabled == true
             end
+        end
+    end)
+
+    -- Auto Catch (exact Fivelyss: arms + firetouchinterest only)
+    pcall(function()
+        if data.autoCatch and AutoCatch then
+            AutoCatch.Distance = tonumber(data.autoCatch.Distance) or AutoCatch.Distance
+            if data.autoCatch.Enabled ~= nil and SetAutoCatchEnabled then
+                SetAutoCatchEnabled(data.autoCatch.Enabled == true, true)
+            elseif data.autoCatch.Enabled ~= nil then
+                AutoCatch.Enabled = data.autoCatch.Enabled == true
+            end
+        end
+    end)
+
+    -- Circle Reach
+    pcall(function()
+        if data.circleReach and CircleReach then
+            if data.circleReach.Radius ~= nil then
+                CircleReach.Radius = tonumber(data.circleReach.Radius) or CircleReach.Radius
+            end
+            if data.circleReach.Transparency ~= nil then
+                CircleReach.Transparency = tonumber(data.circleReach.Transparency) or CircleReach.Transparency
+            end
+            if data.circleReach.Visible ~= nil then
+                CircleReach.Visible = data.circleReach.Visible == true
+            end
+            if data.circleReach.Mode ~= nil then
+                local m = tostring(data.circleReach.Mode)
+                if m == "Arms" or m == "Legs" or m == "Both" then
+                    CircleReach.Mode = m
+                end
+            end
+            if data.circleReach.Enabled ~= nil and SetCircleReachEnabled then
+                SetCircleReachEnabled(data.circleReach.Enabled == true, true)
+            elseif data.circleReach.Enabled ~= nil then
+                CircleReach.Enabled = data.circleReach.Enabled == true
+            end
+            if UpdateCircleReachVisual then pcall(UpdateCircleReachVisual) end
         end
     end)
 
@@ -958,6 +1021,156 @@ do
         if getgenv().FIVELYSS_LimbRespawnToken ~= myToken then return end
         if not Cache.Character or not Cache.Character.Parent then return end
         pcall(CreateAllLimbHitboxes)
+    end)
+end
+
+---------------------------------------------------------------------------
+-- CIRCLE REACH  (body sphere · arms / legs / both · firetouchinterest)
+---------------------------------------------------------------------------
+do
+    local ARMS = { "Right Arm", "Left Arm" }
+    local LEGS = { "Right Leg", "Left Leg" }
+
+    CircleReach = {
+        Enabled = false,
+        Radius = 12,
+        Visible = true,
+        Transparency = 0.65,
+        Mode = "Both", -- "Arms" | "Legs" | "Both"
+        Visual = nil,
+        Conn = nil,
+        LastTouch = {},
+    }
+
+    local function activeLimbs()
+        local m = CircleReach.Mode or "Both"
+        if m == "Arms" then return ARMS end
+        if m == "Legs" then return LEGS end
+        local out = {}
+        for _, n in ipairs(ARMS) do table.insert(out, n) end
+        for _, n in ipairs(LEGS) do table.insert(out, n) end
+        return out
+    end
+
+    UpdateCircleReachVisual = function()
+        local root = GetRoot()
+        if not CircleReach.Enabled or not CircleReach.Visible or not root then
+            if CircleReach.Visual then
+                pcall(function() CircleReach.Visual:Destroy() end)
+                CircleReach.Visual = nil
+            end
+            return
+        end
+        local r = math.max(CircleReach.Radius or 12, 1)
+        local vis = CircleReach.Visual
+        if not vis or not vis.Parent then
+            vis = Instance.new("Part")
+            vis.Name = "Valkyrie_CircleReach"
+            vis.Shape = Enum.PartType.Ball
+            vis.Anchored = true
+            vis.CanCollide = false
+            vis.CanQuery = false
+            vis.CanTouch = false
+            vis.Massless = true
+            vis.Material = Enum.Material.ForceField
+            vis.Color = Color3.fromRGB(255, 80, 120)
+            vis.CastShadow = false
+            vis.Parent = Workspace
+            CircleReach.Visual = vis
+        end
+        -- sphere centered on body (HRP)
+        local d = r * 2
+        vis.Size = Vector3.new(d, d, d)
+        vis.Transparency = CircleReach.Transparency or 0.65
+        vis.CFrame = root.CFrame
+    end
+
+    local function destroyVisual()
+        if CircleReach.Visual then
+            pcall(function() CircleReach.Visual:Destroy() end)
+            CircleReach.Visual = nil
+        end
+    end
+
+    local function touchBall(limb, ball)
+        if not firetouchinterest then return end
+        pcall(function()
+            firetouchinterest(limb, ball, 0)
+            firetouchinterest(limb, ball, 1)
+        end)
+    end
+
+    local function circleTick()
+        if not CircleReach.Enabled then return end
+        local char = Cache.Character or GetCharacter()
+        local root = Cache.Root or GetRoot()
+        if not char or not root then return end
+
+        UpdateCircleReachVisual()
+
+        local radius = CircleReach.Radius or 12
+        local r2 = radius * radius
+        local limbs = activeLimbs()
+        local balls = GetBallList()
+        if #balls == 0 then
+            local main = GetMainBall()
+            if main then balls = { main } end
+        end
+
+        local now = tick()
+        for i = 1, #balls do
+            local ball = balls[i]
+            if ball and ball.Parent and ball:IsA("BasePart") then
+                local offset = ball.Position - root.Position
+                local dist2 = offset.X * offset.X + offset.Y * offset.Y + offset.Z * offset.Z
+                if dist2 <= r2 then
+                    for _, limbName in ipairs(limbs) do
+                        local limb = char:FindFirstChild(limbName)
+                        if limb and limb:IsA("BasePart") then
+                            local key = limbName .. ":" .. tostring(ball)
+                            local last = CircleReach.LastTouch[key] or 0
+                            if (now - last) >= 0.08 then
+                                CircleReach.LastTouch[key] = now
+                                touchBall(limb, ball)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    SetCircleReachEnabled = function(v, silent)
+        CircleReach.Enabled = v and true or false
+        if CircleReach.Conn then
+            pcall(function() CircleReach.Conn:Disconnect() end)
+            CircleReach.Conn = nil
+        end
+        if CircleReach.Enabled then
+            CircleReach.Conn = RunService.Heartbeat:Connect(function()
+                pcall(circleTick)
+            end)
+            UpdateCircleReachVisual()
+            if not silent and Notify then Notify("Circle Reach ON", 2) end
+        else
+            destroyVisual()
+            CircleReach.LastTouch = {}
+            if not silent and Notify then Notify("Circle Reach OFF", 2) end
+        end
+        if UIControls.CircleEnabled then
+            pcall(function() UIControls.CircleEnabled:Set(CircleReach.Enabled) end)
+        end
+    end
+
+    LocalPlayer.CharacterAdded:Connect(function()
+        task.wait(1)
+        if CircleReach.Enabled then
+            UpdateCircleReachVisual()
+        end
+    end)
+
+    LocalPlayer.CharacterRemoving:Connect(function()
+        destroyVisual()
     end)
 end
 
@@ -2564,6 +2777,35 @@ UIControls.LeftArmVisualizer = reachTab:Toggle("Left Arm Vis", nil, false, funct
 UIControls.RightLegVisualizer = reachTab:Toggle("Right Leg Vis", nil, false, function(v) reachSettings.RightLegVisualizer=v; UpdateLimbVisualizer("Right Leg") end)
 UIControls.LeftLegVisualizer = reachTab:Toggle("Left Leg Vis", nil, false, function(v) reachSettings.LeftLegVisualizer=v; UpdateLimbVisualizer("Left Leg") end)
 
+---------------------------------------------------------------------------
+-- CIRCLE REACH TAB  (separate method — arms/legs firetouchinterest in radius)
+---------------------------------------------------------------------------
+local circleTab = makeTab("Circle", "○")
+circleTab:Section("Circle Reach", "Sphere around body · firetouchinterest · arms / legs / both")
+circleTab:Label("Sphere centered on your body. Not limb hitboxes. Pick arms, legs, or both.")
+UIControls.CircleEnabled = circleTab:Toggle("Enable Circle Reach", nil, false, function(v)
+	SetCircleReachEnabled(v)
+end)
+UIControls.CircleMode = circleTab:Dropdown("Limbs", { "Both", "Arms", "Legs" }, "Both", function(v)
+	CircleReach.Mode = v
+end)
+UIControls.CircleRadius = circleTab:Slider("Radius", "sphere size around body", 2, 40, 12, function(v)
+	CircleReach.Radius = v
+	UpdateCircleReachVisual()
+end, " studs")
+UIControls.CircleVisible = circleTab:Toggle("Show Sphere", nil, true, function(v)
+	CircleReach.Visible = v
+	UpdateCircleReachVisual()
+end)
+UIControls.CircleTransparency = circleTab:Slider("Visibility", "0 = solid · 1 = invisible", 0, 1, 0.65, function(v)
+	CircleReach.Transparency = v
+	UpdateCircleReachVisual()
+end)
+circleTab:Button("Refresh Sphere", false, function()
+	UpdateCircleReachVisual()
+	Notify("Sphere refreshed", 2)
+end)
+
 local gkTab = makeTab("GK", "🧤")
 gkTab:Section("GK Helper", "Auto move · BlueGoal / GreenGoal · air + high")
 UIControls.GKHelper = gkTab:Toggle("GK Helper", "Stand in front of your goal", false, function(v)
@@ -2584,6 +2826,7 @@ gkTab:Button("Test Jump+Keep+Save", false, function() ccRunCombo("JumpKeepSave")
 ---------------------------------------------------------------------------
 NRC = { Enabled=false, Magnitude=4, Fires=2, Distance=15, Conn=nil }
 ReactKiller = { Enabled=false, Fires=30, Distance=20, Conn=nil }
+AutoCatch = { Enabled = false, Distance = 15, Conn = nil }
 
 SetNRCEnabled = function(v, silent)
 	NRC.Enabled = v and true or false
@@ -2628,6 +2871,37 @@ SetReactKillerEnabled = function(v, silent)
 	if UIControls.ReactKiller then pcall(function() UIControls.ReactKiller:Set(ReactKiller.Enabled) end) end
 end
 
+-- exact Fivelyss Auto Catch: distance gate, arms only, firetouchinterest(arm, ball)
+SetAutoCatchEnabled = function(v, silent)
+	AutoCatch.Enabled = v and true or false
+	if AutoCatch.Conn then pcall(function() AutoCatch.Conn:Disconnect() end) AutoCatch.Conn = nil end
+	if AutoCatch.Enabled then
+		AutoCatch.Conn = RunService.Heartbeat:Connect(function()
+			if not AutoCatch.Enabled then return end
+			local ball = GetMainBall()
+			local root = Cache.Root
+			if not ball or not root then return end
+			if (ball.Position - root.Position).Magnitude > AutoCatch.Distance then return end
+			local char = Cache.Character
+			if char then
+				for _, name in ipairs({"Right Arm", "Left Arm"}) do
+					local arm = char:FindFirstChild(name)
+					if arm then
+						pcall(function()
+							firetouchinterest(arm, ball, 0)
+							firetouchinterest(arm, ball, 1)
+						end)
+					end
+				end
+			end
+		end)
+		if not silent and Notify then Notify("Auto Catch ON", 2) end
+	else
+		if not silent and Notify then Notify("Auto Catch OFF", 2) end
+	end
+	if UIControls.AutoCatch then pcall(function() UIControls.AutoCatch:Set(AutoCatch.Enabled) end) end
+end
+
 local reactTab = makeTab("React", "⚡")
 reactTab:Section("No React Decline", nil)
 UIControls.NRC = reactTab:Toggle("NRC", nil, false, function(v) SetNRCEnabled(v) end)
@@ -2649,17 +2923,9 @@ UIControls.ReactKiller = reactTab:Toggle("React Killer", nil, false, function(v)
 UIControls.ReactKiller_Fires = reactTab:Slider("Fires / frame", nil, 1, 100, 30, function(v) ReactKiller.Fires=v end)
 
 local toolsTab = makeTab("Tools", "🔧")
-toolsTab:Section("Ball Tools", nil)
-toolsTab:Button("Release Ball", false, function()
-	pcall(function() local c=GetCharacter(); local t=c and c:FindFirstChildOfClass("Tool"); if t then t:Unequip() end end)
-	Notify("Released", 2)
-end)
-toolsTab:Button("Pull Vector", false, function()
-	pcall(function()
-		local root, ball = GetRoot(), GetMainBall()
-		if root and ball then ball.AssemblyLinearVelocity = (root.Position-ball.Position).Unit * 100 end
-	end)
-end)
+toolsTab:Section("Auto Catch", "Exact Fivelyss — arms only, firetouchinterest, no magnet")
+UIControls.AutoCatch = toolsTab:Toggle("Auto Catch", nil, false, function(v) SetAutoCatchEnabled(v) end)
+UIControls.AutoCatch_Distance = toolsTab:Slider("Distance", nil, 1, 40, 15, function(v) AutoCatch.Distance = v end, " studs")
 toolsTab:Section("Stamina / Rejoin", nil)
 toolsTab:Toggle("Unlimited Stamina", nil, false, function(v)
 	if v then
@@ -2683,7 +2949,7 @@ toolsTab:Button("Rejoin", false, function() TeleportService:Teleport(game.PlaceI
 ---------------------------------------------------------------------------
 local configsTab = makeTab("Configs", "💾")
 configsTab:Section("Save / Load", "Writes to executor workspace + ValkyrieConfigs/")
-configsTab:Label("Saves: reach toggles + all sliders, GK on/off, mobile btn positions/size, NRC, React Killer, AntiBan, sky preset")
+configsTab:Label("Saves: reach + circle reach, GK, mobile positions, NRC, React Killer, AntiBan, sky")
 configsTab:Label("Files: workspace/valkyrie_tps_ulti.json  and  ValkyrieConfigs/tps_ulti.json")
 
 configsTab:Button("Save Config", true, function()
@@ -3025,6 +3291,17 @@ SyncUIFromState = function()
 		if ReactKiller then
 			set(UIControls.ReactKiller, ReactKiller.Enabled)
 			set(UIControls.ReactKiller_Fires, ReactKiller.Fires)
+		end
+		if AutoCatch then
+			set(UIControls.AutoCatch, AutoCatch.Enabled)
+			set(UIControls.AutoCatch_Distance, AutoCatch.Distance)
+		end
+		if CircleReach then
+			set(UIControls.CircleEnabled, CircleReach.Enabled)
+			set(UIControls.CircleRadius, CircleReach.Radius)
+			set(UIControls.CircleVisible, CircleReach.Visible)
+			set(UIControls.CircleTransparency, CircleReach.Transparency)
+			set(UIControls.CircleMode, CircleReach.Mode or "Both")
 		end
 		if AntiBan then set(UIControls.AntiBan, AntiBan.Enabled) end
 	end)
