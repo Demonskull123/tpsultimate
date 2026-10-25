@@ -112,6 +112,9 @@ local CC, reachSettings, GKHelper, StartGKHelper, StopGKHelper
 local CreateAllLimbHitboxes, RemoveAllLimbHitboxes, UpdateLimbVisualizer, LimbBodyParts
 local NRC, ReactKiller, AutoCatch, SkyboxCfg, ApplySkybox, RemoveCustomSky, ApplyLighting
 local ccSyncSizes, ccSyncOpacity, ccSyncLock, ccSyncVisible
+local UIControls = {}
+local SyncUIFromState
+local SetNRCEnabled, SetReactKillerEnabled, SetAutoCatchEnabled
 
 local function CollectMobilePositions()
     local positions = {}
@@ -281,6 +284,7 @@ end
 local function ApplyConfigSnapshot(data)
     if type(data) ~= "table" then return end
 
+    -- mobile positions + button style
     if data.mobile then
         if data.mobile.positions then
             ApplyMobilePositions(data.mobile.positions)
@@ -310,20 +314,33 @@ local function ApplyConfigSnapshot(data)
         end)
     end
 
+    -- REACH — write table, rebuild hitboxes (now + short deferred pass)
     pcall(function()
         if data.reach and reachSettings then
             for k, v in pairs(data.reach) do
-                reachSettings[k] = v
+                if type(v) ~= "function" then
+                    reachSettings[k] = v
+                end
             end
-            if CreateAllLimbHitboxes then pcall(CreateAllLimbHitboxes) end
-            if LimbBodyParts and UpdateLimbVisualizer then
-                for _, part in ipairs(LimbBodyParts) do pcall(UpdateLimbVisualizer, part) end
+            local function rebuild()
+                if RemoveAllLimbHitboxes then pcall(RemoveAllLimbHitboxes) end
+                if CreateAllLimbHitboxes then pcall(CreateAllLimbHitboxes) end
+                if LimbBodyParts and UpdateLimbVisualizer then
+                    for _, part in ipairs(LimbBodyParts) do pcall(UpdateLimbVisualizer, part) end
+                end
             end
+            rebuild()
+            task.defer(function()
+                task.wait(0.4)
+                rebuild()
+                if SyncUIFromState then pcall(SyncUIFromState) end
+            end)
         end
     end)
 
+    -- GK
     pcall(function()
-        if data.gk and StartGKHelper and StopGKHelper then
+        if data.gk and StartGKHelper and StopGKHelper and GKHelper then
             if data.gk.Enabled then
                 if not GKHelper.Enabled then StartGKHelper() end
             else
@@ -332,43 +349,53 @@ local function ApplyConfigSnapshot(data)
         end
     end)
 
+    -- AntiBan
     pcall(function()
         if data.antiban then
             AntiBan.Enabled = data.antiban.Enabled == true
         end
     end)
 
+    -- NRC — numbers + actually arm/disarm
     pcall(function()
         if data.nrc and NRC then
             NRC.Magnitude = data.nrc.Magnitude or NRC.Magnitude
             NRC.Distance  = data.nrc.Distance  or NRC.Distance
-            -- Enabled is applied via UI binding / feature toggles after UI mounts
-            if data.nrc.Enabled ~= nil then
-                ConfigStore.NRC_Enabled = data.nrc.Enabled
+            if data.nrc.Enabled ~= nil and SetNRCEnabled then
+                SetNRCEnabled(data.nrc.Enabled == true, true)
+            elseif data.nrc.Enabled ~= nil then
+                NRC.Enabled = data.nrc.Enabled == true
             end
         end
     end)
 
+    -- React Killer
     pcall(function()
         if data.reactKiller and ReactKiller then
             ReactKiller.Fires    = data.reactKiller.Fires or ReactKiller.Fires
             ReactKiller.Distance = data.reactKiller.Distance or ReactKiller.Distance
-            if data.reactKiller.Enabled ~= nil then
-                ConfigStore.ReactKiller_Enabled = data.reactKiller.Enabled
+            if data.reactKiller.Enabled ~= nil and SetReactKillerEnabled then
+                SetReactKillerEnabled(data.reactKiller.Enabled == true, true)
+            elseif data.reactKiller.Enabled ~= nil then
+                ReactKiller.Enabled = data.reactKiller.Enabled == true
             end
         end
     end)
 
+    -- Auto Catch
     pcall(function()
         if data.autoCatch and AutoCatch then
             local d = data.autoCatch.Distance or AutoCatch.Distance
             AutoCatch.Distance = math.clamp(tonumber(d) or 5, 1, 5)
-            if data.autoCatch.Enabled ~= nil then
-                ConfigStore.AutoCatch_Enabled = data.autoCatch.Enabled
+            if data.autoCatch.Enabled ~= nil and SetAutoCatchEnabled then
+                SetAutoCatchEnabled(data.autoCatch.Enabled == true, true)
+            elseif data.autoCatch.Enabled ~= nil then
+                AutoCatch.Enabled = data.autoCatch.Enabled == true
             end
         end
     end)
 
+    -- Sky
     pcall(function()
         if data.sky and SkyboxCfg then
             SkyboxCfg.Current = data.sky.Current or SkyboxCfg.Current
@@ -393,6 +420,11 @@ local function ApplyConfigSnapshot(data)
 
     -- legacy flat format
     if data.mobilePositions then ApplyMobilePositions(data.mobilePositions) end
+
+    -- push everything into the UI toggles/sliders so the menu matches live state
+    if SyncUIFromState then
+        pcall(SyncUIFromState)
+    end
 end
 
 local function SaveConfigToFile(name)
@@ -2523,21 +2555,21 @@ statusTab:Label("Player: "..LocalPlayer.Name.."  ·  Place: "..tostring(game.Pla
 
 local reachTab = makeTab("Reach", "⊕")
 reachTab:Section("Limb Reach", "Hitbox expand per limb")
-reachTab:Toggle("Head Reach", nil, false, function(v) reachSettings.HeadEnabled=v; UpdateLimbVisualizer("Head") end)
-reachTab:Slider("Head X", nil, 0, 10, 1, function(v) reachSettings.ReachX_Head=v; UpdateLimbVisualizer("Head") end)
-reachTab:Slider("Head Y", nil, 0, 10, 1, function(v) reachSettings.ReachY_Head=v; UpdateLimbVisualizer("Head") end)
-reachTab:Slider("Head Z", nil, 0, 10, 1, function(v) reachSettings.ReachZ_Head=v; UpdateLimbVisualizer("Head") end)
-reachTab:Toggle("Right Arm", nil, false, function(v) reachSettings.RightArmEnabled=v; UpdateLimbVisualizer("Right Arm") end)
-reachTab:Toggle("Left Arm", nil, false, function(v) reachSettings.LeftArmEnabled=v; UpdateLimbVisualizer("Left Arm") end)
-reachTab:Slider("Arm X", nil, 0, 10, 1, function(v) reachSettings.ReachX_Arm=v; UpdateLimbVisualizer("Right Arm"); UpdateLimbVisualizer("Left Arm") end)
-reachTab:Slider("Arm Y", nil, 0, 10, 1, function(v) reachSettings.ReachY_Arm=v; UpdateLimbVisualizer("Right Arm"); UpdateLimbVisualizer("Left Arm") end)
-reachTab:Slider("Arm Z", nil, 0, 10, 1, function(v) reachSettings.ReachZ_Arm=v; UpdateLimbVisualizer("Right Arm"); UpdateLimbVisualizer("Left Arm") end)
-reachTab:Toggle("Right Leg", nil, false, function(v) reachSettings.RightLegEnabled=v; UpdateLimbVisualizer("Right Leg") end)
-reachTab:Toggle("Left Leg", nil, false, function(v) reachSettings.LeftLegEnabled=v; UpdateLimbVisualizer("Left Leg") end)
-reachTab:Slider("Leg X", nil, 0, 10, 1, function(v) reachSettings.ReachX_Leg=v; UpdateLimbVisualizer("Right Leg"); UpdateLimbVisualizer("Left Leg") end)
-reachTab:Slider("Leg Y", nil, 0, 10, 1, function(v) reachSettings.ReachY_Leg=v; UpdateLimbVisualizer("Right Leg"); UpdateLimbVisualizer("Left Leg") end)
-reachTab:Slider("Leg Z", nil, 0, 10, 1, function(v) reachSettings.ReachZ_Leg=v; UpdateLimbVisualizer("Right Leg"); UpdateLimbVisualizer("Left Leg") end)
-reachTab:Slider("Reach Multiplier", nil, 1, 200, 50, function(v)
+UIControls.HeadEnabled = reachTab:Toggle("Head Reach", nil, false, function(v) reachSettings.HeadEnabled=v; UpdateLimbVisualizer("Head") end)
+UIControls.ReachX_Head = reachTab:Slider("Head X", nil, 0, 10, 1, function(v) reachSettings.ReachX_Head=v; UpdateLimbVisualizer("Head") end)
+UIControls.ReachY_Head = reachTab:Slider("Head Y", nil, 0, 10, 1, function(v) reachSettings.ReachY_Head=v; UpdateLimbVisualizer("Head") end)
+UIControls.ReachZ_Head = reachTab:Slider("Head Z", nil, 0, 10, 1, function(v) reachSettings.ReachZ_Head=v; UpdateLimbVisualizer("Head") end)
+UIControls.RightArmEnabled = reachTab:Toggle("Right Arm", nil, false, function(v) reachSettings.RightArmEnabled=v; UpdateLimbVisualizer("Right Arm") end)
+UIControls.LeftArmEnabled = reachTab:Toggle("Left Arm", nil, false, function(v) reachSettings.LeftArmEnabled=v; UpdateLimbVisualizer("Left Arm") end)
+UIControls.ReachX_Arm = reachTab:Slider("Arm X", nil, 0, 10, 1, function(v) reachSettings.ReachX_Arm=v; UpdateLimbVisualizer("Right Arm"); UpdateLimbVisualizer("Left Arm") end)
+UIControls.ReachY_Arm = reachTab:Slider("Arm Y", nil, 0, 10, 1, function(v) reachSettings.ReachY_Arm=v; UpdateLimbVisualizer("Right Arm"); UpdateLimbVisualizer("Left Arm") end)
+UIControls.ReachZ_Arm = reachTab:Slider("Arm Z", nil, 0, 10, 1, function(v) reachSettings.ReachZ_Arm=v; UpdateLimbVisualizer("Right Arm"); UpdateLimbVisualizer("Left Arm") end)
+UIControls.RightLegEnabled = reachTab:Toggle("Right Leg", nil, false, function(v) reachSettings.RightLegEnabled=v; UpdateLimbVisualizer("Right Leg") end)
+UIControls.LeftLegEnabled = reachTab:Toggle("Left Leg", nil, false, function(v) reachSettings.LeftLegEnabled=v; UpdateLimbVisualizer("Left Leg") end)
+UIControls.ReachX_Leg = reachTab:Slider("Leg X", nil, 0, 10, 1, function(v) reachSettings.ReachX_Leg=v; UpdateLimbVisualizer("Right Leg"); UpdateLimbVisualizer("Left Leg") end)
+UIControls.ReachY_Leg = reachTab:Slider("Leg Y", nil, 0, 10, 1, function(v) reachSettings.ReachY_Leg=v; UpdateLimbVisualizer("Right Leg"); UpdateLimbVisualizer("Left Leg") end)
+UIControls.ReachZ_Leg = reachTab:Slider("Leg Z", nil, 0, 10, 1, function(v) reachSettings.ReachZ_Leg=v; UpdateLimbVisualizer("Right Leg"); UpdateLimbVisualizer("Left Leg") end)
+UIControls.ReachDistance = reachTab:Slider("Reach Multiplier", nil, 1, 200, 50, function(v)
 	reachSettings.ReachDistance=v
 	for _, p in ipairs(LimbBodyParts) do UpdateLimbVisualizer(p) end
 end)
@@ -2546,26 +2578,27 @@ reachTab:Button("Disable All Reach", false, function()
 	reachSettings.HeadEnabled=false; reachSettings.RightArmEnabled=false; reachSettings.LeftArmEnabled=false
 	reachSettings.RightLegEnabled=false; reachSettings.LeftLegEnabled=false
 	RemoveAllLimbHitboxes(); Notify("All Limb Reach OFF", 2)
+	if SyncUIFromState then SyncUIFromState() end
 end)
 reachTab:Section("Visualizers", nil)
-reachTab:Toggle("Head Vis", nil, false, function(v) reachSettings.HeadVisualizer=v; UpdateLimbVisualizer("Head") end)
-reachTab:Toggle("Right Arm Vis", nil, false, function(v) reachSettings.RightArmVisualizer=v; UpdateLimbVisualizer("Right Arm") end)
-reachTab:Toggle("Left Arm Vis", nil, false, function(v) reachSettings.LeftArmVisualizer=v; UpdateLimbVisualizer("Left Arm") end)
-reachTab:Toggle("Right Leg Vis", nil, false, function(v) reachSettings.RightLegVisualizer=v; UpdateLimbVisualizer("Right Leg") end)
-reachTab:Toggle("Left Leg Vis", nil, false, function(v) reachSettings.LeftLegVisualizer=v; UpdateLimbVisualizer("Left Leg") end)
+UIControls.HeadVisualizer = reachTab:Toggle("Head Vis", nil, false, function(v) reachSettings.HeadVisualizer=v; UpdateLimbVisualizer("Head") end)
+UIControls.RightArmVisualizer = reachTab:Toggle("Right Arm Vis", nil, false, function(v) reachSettings.RightArmVisualizer=v; UpdateLimbVisualizer("Right Arm") end)
+UIControls.LeftArmVisualizer = reachTab:Toggle("Left Arm Vis", nil, false, function(v) reachSettings.LeftArmVisualizer=v; UpdateLimbVisualizer("Left Arm") end)
+UIControls.RightLegVisualizer = reachTab:Toggle("Right Leg Vis", nil, false, function(v) reachSettings.RightLegVisualizer=v; UpdateLimbVisualizer("Right Leg") end)
+UIControls.LeftLegVisualizer = reachTab:Toggle("Left Leg Vis", nil, false, function(v) reachSettings.LeftLegVisualizer=v; UpdateLimbVisualizer("Left Leg") end)
 
 local gkTab = makeTab("GK", "🧤")
 gkTab:Section("GK Helper", "Auto move · BlueGoal / GreenGoal · air + high")
-gkTab:Toggle("GK Helper", "Stand in front of your goal", false, function(v)
+UIControls.GKHelper = gkTab:Toggle("GK Helper", "Stand in front of your goal", false, function(v)
 	if v then StartGKHelper() else StopGKHelper() end
 end)
 gkTab:Label("Only helps when ball is coming at your goal. Caps retreat. Mobile GK button toggles too.")
 gkTab:Section("Mobile Macros", "Keep1 + Save tools")
-gkTab:Toggle("Show Mobile Buttons", nil, true, function(v) CC.btn.visible=v; ccSyncVisible() end)
-gkTab:Toggle("Lock Buttons", nil, false, function(v) CC.btn.locked=v; ccSyncLock() end)
-gkTab:Toggle("Enable Macros", nil, true, function(v) CC.mobEnabled=v end)
-gkTab:Slider("Button Size", nil, 40, 180, 88, function(v) CC.btn.size=v; ccSyncSizes() end, " px")
-gkTab:Slider("Keep→Save Gap", nil, 0, 0.5, 0.08, function(v) CC.keepToSave=v end, " s")
+UIControls.ShowMobile = gkTab:Toggle("Show Mobile Buttons", nil, true, function(v) CC.btn.visible=v; ccSyncVisible() end)
+UIControls.LockButtons = gkTab:Toggle("Lock Buttons", nil, false, function(v) CC.btn.locked=v; ccSyncLock() end)
+UIControls.EnableMacros = gkTab:Toggle("Enable Macros", nil, true, function(v) CC.mobEnabled=v end)
+UIControls.BtnSize = gkTab:Slider("Button Size", nil, 40, 180, 88, function(v) CC.btn.size=v; ccSyncSizes() end, " px")
+UIControls.KeepToSave = gkTab:Slider("Keep→Save Gap", nil, 0, 0.5, 0.08, function(v) CC.keepToSave=v end, " s")
 gkTab:Button("Test Keep+Save", false, function() ccRunCombo("KeepSave") end)
 gkTab:Button("Test Jump+Keep+Save", false, function() ccRunCombo("JumpKeepSave") end)
 
@@ -2576,12 +2609,10 @@ NRC = { Enabled=false, Magnitude=4, Fires=2, Distance=15, Conn=nil }
 ReactKiller = { Enabled=false, Fires=30, Distance=20, Conn=nil }
 AutoCatch = { Enabled=false, Distance=5, Conn=nil }
 
-local reactTab = makeTab("React", "⚡")
-reactTab:Section("No React Decline", nil)
-reactTab:Toggle("NRC", nil, false, function(v)
-	NRC.Enabled=v
-	if v then
-		if NRC.Conn then NRC.Conn:Disconnect() end
+SetNRCEnabled = function(v, silent)
+	NRC.Enabled = v and true or false
+	if NRC.Conn then pcall(function() NRC.Conn:Disconnect() end) NRC.Conn = nil end
+	if NRC.Enabled then
 		NRC.Conn = RunService.Heartbeat:Connect(function()
 			if not NRC.Enabled then return end
 			local ball, root = GetMainBall(), Cache.Root
@@ -2590,30 +2621,17 @@ reactTab:Toggle("NRC", nil, false, function(v)
 				pcall(function() ball.AssemblyLinearVelocity = (ball.Position-root.Position).Unit * NRC.Magnitude end)
 			end
 		end)
-		Notify("NRC ON", 2)
+		if not silent and Notify then Notify("NRC ON", 2) end
 	else
-		if NRC.Conn then NRC.Conn:Disconnect(); NRC.Conn=nil end
-		Notify("NRC OFF", 2)
+		if not silent and Notify then Notify("NRC OFF", 2) end
 	end
-end)
-reactTab:Slider("Magnitude", nil, 1, 20, 4, function(v) NRC.Magnitude=v end)
-reactTab:Slider("Distance", nil, 1, 50, 15, function(v) NRC.Distance=v end, " studs")
-local function FireUniversalReact(mag)
-	pcall(function()
-		local ball, root = GetMainBall(), Cache.Root
-		if ball and root then ball.AssemblyLinearVelocity = (ball.Position-root.Position).Unit * mag end
-	end)
+	if UIControls.NRC then pcall(function() UIControls.NRC:Set(NRC.Enabled) end) end
 end
-reactTab:Section("React Methods", nil)
-reactTab:Button("Universal React", true, function() FireUniversalReact(8); Notify("Universal", 2) end)
-reactTab:Button("Main React", false, function() FireUniversalReact(10); Notify("Main", 2) end)
-reactTab:Button("Break React", false, function() FireUniversalReact(15); Notify("Break", 2) end)
-reactTab:Button("Defence React", false, function() FireUniversalReact(6); Notify("Defence", 2) end)
-reactTab:Section("React Killer", nil)
-reactTab:Toggle("React Killer", nil, false, function(v)
-	ReactKiller.Enabled=v
-	if v then
-		if ReactKiller.Conn then ReactKiller.Conn:Disconnect() end
+
+SetReactKillerEnabled = function(v, silent)
+	ReactKiller.Enabled = v and true or false
+	if ReactKiller.Conn then pcall(function() ReactKiller.Conn:Disconnect() end) ReactKiller.Conn = nil end
+	if ReactKiller.Enabled then
 		ReactKiller.Conn = RunService.Heartbeat:Connect(function()
 			if not ReactKiller.Enabled then return end
 			local ball, root = GetMainBall(), Cache.Root
@@ -2627,20 +2645,17 @@ reactTab:Toggle("React Killer", nil, false, function(v)
 				end
 			end
 		end)
-		Notify("React Killer ON", 2)
+		if not silent and Notify then Notify("React Killer ON", 2) end
 	else
-		if ReactKiller.Conn then ReactKiller.Conn:Disconnect(); ReactKiller.Conn=nil end
-		Notify("React Killer OFF", 2)
+		if not silent and Notify then Notify("React Killer OFF", 2) end
 	end
-end)
-reactTab:Slider("Fires / frame", nil, 1, 100, 30, function(v) ReactKiller.Fires=v end)
+	if UIControls.ReactKiller then pcall(function() UIControls.ReactKiller:Set(ReactKiller.Enabled) end) end
+end
 
-local toolsTab = makeTab("Tools", "🔧")
-toolsTab:Section("Auto Catch", nil)
-toolsTab:Toggle("Auto Catch", nil, false, function(v)
-	AutoCatch.Enabled=v
-	if v then
-		if AutoCatch.Conn then AutoCatch.Conn:Disconnect() end
+SetAutoCatchEnabled = function(v, silent)
+	AutoCatch.Enabled = v and true or false
+	if AutoCatch.Conn then pcall(function() AutoCatch.Conn:Disconnect() end) AutoCatch.Conn = nil end
+	if AutoCatch.Enabled then
 		AutoCatch.Conn = RunService.Heartbeat:Connect(function()
 			if not AutoCatch.Enabled then return end
 			local ball, root = GetMainBall(), Cache.Root
@@ -2654,12 +2669,37 @@ toolsTab:Toggle("Auto Catch", nil, false, function(v)
 				end
 			end
 		end)
-		Notify("Auto Catch ON", 2)
+		if not silent and Notify then Notify("Auto Catch ON", 2) end
 	else
-		if AutoCatch.Conn then AutoCatch.Conn:Disconnect(); AutoCatch.Conn=nil end
+		if not silent and Notify then Notify("Auto Catch OFF", 2) end
 	end
-end)
-toolsTab:Slider("Catch Distance", nil, 1, 5, 5, function(v) AutoCatch.Distance=v end, " studs")
+	if UIControls.AutoCatch then pcall(function() UIControls.AutoCatch:Set(AutoCatch.Enabled) end) end
+end
+
+local reactTab = makeTab("React", "⚡")
+reactTab:Section("No React Decline", nil)
+UIControls.NRC = reactTab:Toggle("NRC", nil, false, function(v) SetNRCEnabled(v) end)
+UIControls.NRC_Magnitude = reactTab:Slider("Magnitude", nil, 1, 20, 4, function(v) NRC.Magnitude=v end)
+UIControls.NRC_Distance = reactTab:Slider("Distance", nil, 1, 50, 15, function(v) NRC.Distance=v end, " studs")
+local function FireUniversalReact(mag)
+	pcall(function()
+		local ball, root = GetMainBall(), Cache.Root
+		if ball and root then ball.AssemblyLinearVelocity = (ball.Position-root.Position).Unit * mag end
+	end)
+end
+reactTab:Section("React Methods", nil)
+reactTab:Button("Universal React", true, function() FireUniversalReact(8); Notify("Universal", 2) end)
+reactTab:Button("Main React", false, function() FireUniversalReact(10); Notify("Main", 2) end)
+reactTab:Button("Break React", false, function() FireUniversalReact(15); Notify("Break", 2) end)
+reactTab:Button("Defence React", false, function() FireUniversalReact(6); Notify("Defence", 2) end)
+reactTab:Section("React Killer", nil)
+UIControls.ReactKiller = reactTab:Toggle("React Killer", nil, false, function(v) SetReactKillerEnabled(v) end)
+UIControls.ReactKiller_Fires = reactTab:Slider("Fires / frame", nil, 1, 100, 30, function(v) ReactKiller.Fires=v end)
+
+local toolsTab = makeTab("Tools", "🔧")
+toolsTab:Section("Auto Catch", nil)
+UIControls.AutoCatch = toolsTab:Toggle("Auto Catch", nil, false, function(v) SetAutoCatchEnabled(v) end)
+UIControls.AutoCatch_Distance = toolsTab:Slider("Catch Distance", nil, 1, 5, 5, function(v) AutoCatch.Distance=v end, " studs")
 toolsTab:Button("Release Ball", false, function()
 	pcall(function() local c=GetCharacter(); local t=c and c:FindFirstChildOfClass("Tool"); if t then t:Unequip() end end)
 	Notify("Released", 2)
@@ -2970,7 +3010,7 @@ perfTab:Button("Disable Shadows", false, function() pcall(function() Lighting.Gl
 
 local protTab = makeTab("Protect", "🛡")
 protTab:Section("Anti-Ban", nil)
-protTab:Toggle("Anti-Ban Extreme", nil, true, function(v) AntiBan.Enabled=v; Notify("Anti-Ban "..(v and "ON" or "OFF"), 2) end)
+UIControls.AntiBan = protTab:Toggle("Anti-Ban Extreme", nil, true, function(v) AntiBan.Enabled=v; Notify("Anti-Ban "..(v and "ON" or "OFF"), 2) end)
 local AntiAFKConn = nil
 protTab:Toggle("Anti-AFK", nil, false, function(v)
 	if v then
@@ -2990,6 +3030,59 @@ menuTab:Label("Top bar: mark · title · x close · − half")
 menuTab:Label("Mobile bar: Open · Half · Close  ·  Orb when closed")
 menuTab:Button("Show Menu", true, function() show() end)
 menuTab:Button("Hide Menu", false, function() hide() end)
+
+-- push live state into every bound UI control (called after Load)
+SyncUIFromState = function()
+	pcall(function()
+		if not reachSettings then return end
+		local function set(ctl, val)
+			if ctl and ctl.Set then pcall(function() ctl:Set(val) end) end
+		end
+		set(UIControls.HeadEnabled, reachSettings.HeadEnabled)
+		set(UIControls.ReachX_Head, reachSettings.ReachX_Head)
+		set(UIControls.ReachY_Head, reachSettings.ReachY_Head)
+		set(UIControls.ReachZ_Head, reachSettings.ReachZ_Head)
+		set(UIControls.RightArmEnabled, reachSettings.RightArmEnabled)
+		set(UIControls.LeftArmEnabled, reachSettings.LeftArmEnabled)
+		set(UIControls.ReachX_Arm, reachSettings.ReachX_Arm)
+		set(UIControls.ReachY_Arm, reachSettings.ReachY_Arm)
+		set(UIControls.ReachZ_Arm, reachSettings.ReachZ_Arm)
+		set(UIControls.RightLegEnabled, reachSettings.RightLegEnabled)
+		set(UIControls.LeftLegEnabled, reachSettings.LeftLegEnabled)
+		set(UIControls.ReachX_Leg, reachSettings.ReachX_Leg)
+		set(UIControls.ReachY_Leg, reachSettings.ReachY_Leg)
+		set(UIControls.ReachZ_Leg, reachSettings.ReachZ_Leg)
+		set(UIControls.ReachDistance, reachSettings.ReachDistance)
+		set(UIControls.HeadVisualizer, reachSettings.HeadVisualizer)
+		set(UIControls.RightArmVisualizer, reachSettings.RightArmVisualizer)
+		set(UIControls.LeftArmVisualizer, reachSettings.LeftArmVisualizer)
+		set(UIControls.RightLegVisualizer, reachSettings.RightLegVisualizer)
+		set(UIControls.LeftLegVisualizer, reachSettings.LeftLegVisualizer)
+
+		if GKHelper then set(UIControls.GKHelper, GKHelper.Enabled == true) end
+		if CC then
+			set(UIControls.ShowMobile, CC.btn and CC.btn.visible)
+			set(UIControls.LockButtons, CC.btn and CC.btn.locked)
+			set(UIControls.EnableMacros, CC.mobEnabled)
+			set(UIControls.BtnSize, CC.btn and CC.btn.size)
+			set(UIControls.KeepToSave, CC.keepToSave)
+		end
+		if NRC then
+			set(UIControls.NRC, NRC.Enabled)
+			set(UIControls.NRC_Magnitude, NRC.Magnitude)
+			set(UIControls.NRC_Distance, NRC.Distance)
+		end
+		if ReactKiller then
+			set(UIControls.ReactKiller, ReactKiller.Enabled)
+			set(UIControls.ReactKiller_Fires, ReactKiller.Fires)
+		end
+		if AutoCatch then
+			set(UIControls.AutoCatch, AutoCatch.Enabled)
+			set(UIControls.AutoCatch_Distance, AutoCatch.Distance)
+		end
+		if AntiBan then set(UIControls.AntiBan, AntiBan.Enabled) end
+	end)
+end
 
 UserInputService.InputBegan:Connect(function(Input, Processed)
 	if Processed then return end
