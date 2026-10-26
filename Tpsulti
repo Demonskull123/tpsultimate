@@ -1515,6 +1515,9 @@ do
         MIN_MOVE_DIST = 0.15,
         TOWARD_VEL = 0.4,
         FAR_PRE_RANGE = 150,
+        -- only track balls once they are inside the penalty box (not outside / in front)
+        PENALTY_DEPTH = 55,
+        PENALTY_HALF_WIDTH = 26,
         MAX_RETREAT = 14,
         RETREAT_HIGH_STRAIGHT = 4.5,
         RETREAT_LOW_STRAIGHT = 1.2,
@@ -1651,6 +1654,23 @@ do
             if info.Sign < 0 and d < 0 then return true end
         end
         return false
+    end
+
+    -- only true when ball is inside the penalty box (past the 18-yard line toward goal)
+    local function isBallInPenaltyArea(ballPos, info)
+        if not info or not ballPos then return false end
+        local depth = GK_CONFIG.PENALTY_DEPTH or 55
+        local halfW = GK_CONFIG.PENALTY_HALF_WIDTH or 26
+        local pAxis = (info.Axis == "Z") and ballPos.Z or ballPos.X
+        local lat = (info.Axis == "Z") and ballPos.X or ballPos.Z
+        local goalLat = info.Pos and ((info.Axis == "Z") and info.Pos.X or info.Pos.Z) or 0
+        local axisDist = math.abs(pAxis - info.Value)
+        -- must be on the pitch side of the goal line, not behind the net
+        if info.Sign > 0 and pAxis > info.Value + 1 then return false end
+        if info.Sign < 0 and pAxis < info.Value - 1 then return false end
+        if axisDist > depth then return false end
+        if math.abs(lat - goalLat) > halfW then return false end
+        return true
     end
 
     local function predict(ballPos, ballVel, goalValue, dirSign, axis, ballSpeed)
@@ -1891,6 +1911,23 @@ do
             local vel = ball.AssemblyLinearVelocity
             local speed = vel.Magnitude
             local ballPos = ball.Position
+
+            -- hard gate: ignore everything still outside / in front of the penalty box
+            if not isBallInPenaltyArea(ballPos, info2) then
+                if GKHelper.IsMoving then
+                    GKHelper.LastTargetAge = (GKHelper.LastTargetAge or 0) + dt
+                    if GKHelper.LastTargetAge > GK_CONFIG.RETURN_FADE_TIME then
+                        hum.WalkSpeed = GKHelper.OriginalSpeed
+                        pcall(function() hum:Move(Vector3.zero) end)
+                        GKHelper.IsMoving = false
+                        GKHelper.LastTarget = nil
+                    end
+                end
+                GKHelper.SmoothLat = nil
+                if GKHelper.PredCircle then GKHelper.PredCircle.CFrame = CFrame.new(0, -100, 0) end
+                if GKHelper.InnerRing  then GKHelper.InnerRing.CFrame  = CFrame.new(0, -100, 0) end
+                return
+            end
 
             if speed < (GK_CONFIG.BALL_SPEED_THRESHOLD or 2.8) then
                 if GKHelper.IsMoving then
