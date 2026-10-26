@@ -847,10 +847,17 @@ do
         hb.CanCollide = false
         hb.Transparency = 1
         hb.Massless = true
+        local isArm = (partName == "Right Arm" or partName == "Left Arm")
         if partName == "Head" then
             hb.Size = Vector3.new(bodyPart.Size.X * reachSettings.ReachX_Head * 2, bodyPart.Size.Y * reachSettings.ReachY_Head * 2, bodyPart.Size.Z * reachSettings.ReachZ_Head * 2)
-        elseif partName == "Right Arm" or partName == "Left Arm" then
-            hb.Size = Vector3.new(bodyPart.Size.X * reachSettings.ReachX_Arm * 2, bodyPart.Size.Y * reachSettings.ReachY_Arm * 2, bodyPart.Size.Z * reachSettings.ReachZ_Arm * 2)
+        elseif isArm then
+            -- slightly larger arm volume + optional hard collide when circle reach is on (stops GK phase-through)
+            local mul = 2.15
+            if CircleReach and CircleReach.Enabled then
+                mul = 2.45
+                hb.CanCollide = true
+            end
+            hb.Size = Vector3.new(bodyPart.Size.X * reachSettings.ReachX_Arm * mul, bodyPart.Size.Y * reachSettings.ReachY_Arm * mul, bodyPart.Size.Z * reachSettings.ReachZ_Arm * mul)
         else
             hb.Size = Vector3.new(bodyPart.Size.X * reachSettings.ReachX_Leg * 2, bodyPart.Size.Y * reachSettings.ReachY_Leg * 2, bodyPart.Size.Z * reachSettings.ReachZ_Leg * 2)
         end
@@ -963,13 +970,24 @@ do
                         if ballPart then
                             local key = partName .. ":" .. ballPart:GetFullName()
                             newTouches[key] = true
-                            if not LimbActiveTouches[key] or (now - LimbActiveTouches[key]) > 0.1 then
+                            if not LimbActiveTouches[key] or (now - LimbActiveTouches[key]) > 0.08 then
                                 LimbActiveTouches[key] = now
                                 pcall(function()
                                     firetouchinterest(ballPart, bodyPart, 0)
                                     task.wait()
                                     firetouchinterest(ballPart, bodyPart, 1)
                                 end)
+                                -- anti phase-through (GK + arm reach + circle reach): push ball out of hitbox
+                                if (partName == "Right Arm" or partName == "Left Arm") and CircleReach and CircleReach.Enabled then
+                                    pcall(function()
+                                        local dir = (ballPart.Position - hb.Position)
+                                        if dir.Magnitude < 0.05 then dir = bodyPart.CFrame.LookVector end
+                                        dir = dir.Unit
+                                        local speed = math.max(ballPart.AssemblyLinearVelocity.Magnitude, 22)
+                                        ballPart.AssemblyLinearVelocity = dir * speed
+                                        ballPart.AssemblyAngularVelocity = Vector3.zero
+                                    end)
+                                end
                             end
                         end
                     end
@@ -1121,7 +1139,20 @@ do
     SetCircleReachEnabled = function(v, silent)
         CircleReach.Enabled = v and true or false
         if CircleReach.Conn then
-            pcall(function() CircleReach.Conn:Disconnect() end)
+            pcall(function() CircleReach.Conn:Disconnect() end
+
+-- rebuild limb hitboxes when circle reach state changes (prevents intermittent arm phase-through as GK)
+do
+    local _prevSetCircle = SetCircleReachEnabled
+    SetCircleReachEnabled = function(v, silent)
+        _prevSetCircle(v, silent)
+        task.defer(function()
+            if RemoveAllLimbHitboxes then pcall(RemoveAllLimbHitboxes) end
+            if CreateAllLimbHitboxes then pcall(CreateAllLimbHitboxes) end
+        end)
+    end
+end
+)
             CircleReach.Conn = nil
         end
         if CircleReach.Enabled then
