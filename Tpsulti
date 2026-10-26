@@ -1260,7 +1260,21 @@ do
         end
         return false
     end
-    local function macro_KeepSave() ccKeep1() task.wait(CC.keepToSave) ccSave() end
+    local function macro_KeepSave()
+        -- GK Helper on the instant the button is pressed
+        if not GKHelper.Enabled then
+            StartGKHelper()
+        end
+        task.delay(2.5, function()
+            if GKHelper.Enabled then
+                StopGKHelper()
+            end
+        end)
+        -- then run keep + save
+        ccKeep1()
+        task.wait(CC.keepToSave)
+        ccSave()
+    end
     local function macro_JumpKeepSave() ccJump() task.wait(CC.keepToSave) ccKeep1() task.wait(CC.keepToSave) ccSave() end
     local CC_MACROS = { KeepSave = macro_KeepSave, JumpKeepSave = macro_JumpKeepSave }
     local CC_BTNS = { { id = "ccKS", label = "K1\n+SAVE", combo = "KeepSave" }, { id = "ccJKS", label = "JUMP\nK1+SV", combo = "JumpKeepSave" } }
