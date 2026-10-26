@@ -116,7 +116,7 @@ local ccSyncSizes, ccSyncOpacity, ccSyncLock, ccSyncVisible
 local CircleReach, SetCircleReachEnabled, UpdateCircleReachVisual
 local UIControls = {}
 local SyncUIFromState
-local SetNRCEnabled, SetReactKillerEnabled
+local SetNRCEnabled, SetReactKillerEnabled, SetReactBreakEnabled
 local Notify
 
 local function CollectMobilePositions()
@@ -260,6 +260,16 @@ local function CollectConfigSnapshot()
     end)
 
     pcall(function()
+        if ReactBreak then
+            data.reactBreak = {
+                Enabled = ReactBreak.Enabled == true,
+                Strength = ReactBreak.Strength,
+                Distance = ReactBreak.Distance,
+            }
+        end
+    end)
+
+    pcall(function()
         if CircleReach then
             data.circleReach = {
                 Enabled = CircleReach.Enabled == true,
@@ -384,6 +394,19 @@ local function ApplyConfigSnapshot(data)
                 SetReactKillerEnabled(data.reactKiller.Enabled == true, true)
             elseif data.reactKiller.Enabled ~= nil then
                 ReactKiller.Enabled = data.reactKiller.Enabled == true
+            end
+        end
+    end)
+
+    -- React Break
+    pcall(function()
+        if data.reactBreak and ReactBreak then
+            ReactBreak.Strength = data.reactBreak.Strength or ReactBreak.Strength
+            ReactBreak.Distance = data.reactBreak.Distance or ReactBreak.Distance
+            if data.reactBreak.Enabled ~= nil and SetReactBreakEnabled then
+                SetReactBreakEnabled(data.reactBreak.Enabled == true, true)
+            elseif data.reactBreak.Enabled ~= nil then
+                ReactBreak.Enabled = data.reactBreak.Enabled == true
             end
         end
     end)
@@ -1261,19 +1284,18 @@ do
         return false
     end
     local function macro_KeepSave()
-        -- GK Helper on the instant the button is pressed
+        ccKeep1()
+        task.wait(CC.keepToSave)
+        ccSave()
+        -- GK Helper on right after Keep+Save finishes, then auto-off at 2.2s
         if not GKHelper.Enabled then
             StartGKHelper()
         end
-        task.delay(2.5, function()
+        task.delay(2.2, function()
             if GKHelper.Enabled then
                 StopGKHelper()
             end
         end)
-        -- then run keep + save
-        ccKeep1()
-        task.wait(CC.keepToSave)
-        ccSave()
     end
     local function macro_JumpKeepSave() ccJump() task.wait(CC.keepToSave) ccKeep1() task.wait(CC.keepToSave) ccSave() end
     local CC_MACROS = { KeepSave = macro_KeepSave, JumpKeepSave = macro_JumpKeepSave }
@@ -1752,8 +1774,15 @@ do
         local live = (axis == "Z") and ballPos.X or ballPos.Z
         local vLat = (axis == "Z") and vel.X or vel.Z
         local predLat = pred and ((axis == "Z") and pred.X or pred.Z) or live
+        local absVLat = math.abs(vLat)
+        -- fast left/right shots get longer lead so GK commits early
         local leadT = GK_CONFIG.CLOSE_LEAD or 0.55
         if ttg then leadT = math.clamp(ttg * 0.65, 0.18, 0.85) end
+        if absVLat >= 55 then
+            leadT = math.clamp(leadT + 0.35, 0.35, 1.15)
+        elseif absVLat >= 35 then
+            leadT = math.clamp(leadT + 0.18, 0.28, 1.0)
+        end
         local lead = live + vLat * leadT
         local close = (ttg and ttg < 1.1) or false
         local raw
@@ -1763,6 +1792,10 @@ do
             local blend = 0.4
             if ttg and ttg < 2.0 then blend = 0.55 end
             if ttg and ttg < 1.4 then blend = 0.7 end
+            -- bias harder toward lead on high lateral speed
+            if absVLat >= 45 then
+                blend = math.min(blend + 0.18, 0.88)
+            end
             raw = live * (1 - blend) + predLat * blend
             raw = raw * 0.75 + lead * 0.25
         end
@@ -1773,6 +1806,12 @@ do
             sm = 0.92
         elseif ballSpeed >= (GK_CONFIG.FAST_SHOT_SPEED or 55) then
             sm = GK_CONFIG.LAT_SMOOTH_FAST or 0.78
+        end
+        -- snap harder on pure lateral rockets
+        if absVLat >= 60 then
+            sm = math.max(sm, 0.96)
+        elseif absVLat >= 40 then
+            sm = math.max(sm, 0.88)
         end
         if GKHelper.SmoothLat == nil then
             GKHelper.SmoothLat = raw
@@ -2101,6 +2140,14 @@ do
                         if mag > 0.05 then
                             dir = dir / mag
                             local boostCap = blastShot and (GK_CONFIG.BOOST_MAX_BLAST or 210) or (fastShot and (GK_CONFIG.BOOST_MAX or 175) or 140)
+                            -- extra juice when the ball is screaming left/right
+                            local vLatNow = (GKHelper.GoalAxis == "Z") and vel.X or vel.Z
+                            local absVLatNow = math.abs(vLatNow or 0)
+                            if absVLatNow >= 55 then
+                                boostCap = math.max(boostCap, 230)
+                            elseif absVLatNow >= 40 then
+                                boostCap = math.max(boostCap, 195)
+                            end
                             local boost
                             if blastShot then
                                 boost = math.clamp(flatDist / math.max(ttg or 0.2, 0.06), 80, boostCap)
@@ -2108,8 +2155,8 @@ do
                                 boost = math.clamp(flatDist / math.max(ttg, 0.06), 70, boostCap)
                             elseif ttg and ttg < 0.9 then
                                 boost = math.clamp(flatDist / math.max(ttg, 0.1), 55, boostCap * 0.9)
-                            elseif fastShot then
-                                boost = math.clamp(60 + flatDist * 3.0, 60, boostCap * 0.85)
+                            elseif fastShot or absVLatNow >= 45 then
+                                boost = math.clamp(60 + flatDist * 3.4, 65, boostCap * 0.92)
                             elseif inAir or isHigh then
                                 boost = math.clamp(50 + flatDist * 2.4, 50, 120)
                             else
@@ -2888,6 +2935,48 @@ gkTab:Button("Test Jump+Keep+Save", false, function() ccRunCombo("JumpKeepSave")
 ---------------------------------------------------------------------------
 NRC = { Enabled=false, Magnitude=4, Fires=2, Distance=15, Conn=nil }
 ReactKiller = { Enabled=false, Fires=30, Distance=20, Conn=nil }
+ReactBreak = { Enabled=false, Strength=0.7, Distance=16, Conn=nil }
+
+SetReactBreakEnabled = function(v, silent)
+	ReactBreak.Enabled = v and true or false
+	if ReactBreak.Conn then pcall(function() ReactBreak.Conn:Disconnect() end) ReactBreak.Conn = nil end
+	if ReactBreak.Enabled then
+		ReactBreak.Conn = RunService.Heartbeat:Connect(function()
+			if not ReactBreak.Enabled then return end
+			local ball = GetMainBall()
+			if not ball or not ball.Parent then return end
+			local bpos = ball.Position
+			local dist = ReactBreak.Distance or 16
+			local strength = ReactBreak.Strength or 0.7
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= LocalPlayer and plr.Character then
+					local root = plr.Character:FindFirstChild("HumanoidRootPart")
+					if root then
+						local offset = bpos - root.Position
+						local mag = offset.Magnitude
+						if mag > 0.05 and mag <= dist then
+							-- push ball away from enemy only (never touches local player)
+							local dir = offset.Unit
+							local push = dir * (strength * 28 + (dist - mag) * 1.1)
+							pcall(function()
+								ball.AssemblyLinearVelocity = ball.AssemblyLinearVelocity + push * 0.085
+								ball.AssemblyAngularVelocity = ball.AssemblyAngularVelocity + Vector3.new(
+									(math.random() - 0.5) * strength * 12,
+									(math.random() - 0.5) * strength * 12,
+									(math.random() - 0.5) * strength * 12
+								)
+							end)
+						end
+					end
+				end
+			end
+		end)
+		if not silent and Notify then Notify("React Break ON", 2) end
+	else
+		if not silent and Notify then Notify("React Break OFF", 2) end
+	end
+	if UIControls.ReactBreak then pcall(function() UIControls.ReactBreak:Set(ReactBreak.Enabled) end) end
+end
 
 SetNRCEnabled = function(v, silent)
 	NRC.Enabled = v and true or false
@@ -2937,6 +3026,10 @@ reactTab:Section("No React Decline", nil)
 UIControls.NRC = reactTab:Toggle("NRC", nil, false, function(v) SetNRCEnabled(v) end)
 UIControls.NRC_Magnitude = reactTab:Slider("Magnitude", nil, 1, 20, 4, function(v) NRC.Magnitude=v end)
 UIControls.NRC_Distance = reactTab:Slider("Distance", nil, 1, 50, 15, function(v) NRC.Distance=v end, " studs")
+reactTab:Section("React Break", "Breaks enemy react only · leaves your own touch clean")
+UIControls.ReactBreak = reactTab:Toggle("React Break", "Pops ball off enemies when in range", false, function(v) SetReactBreakEnabled(v) end)
+UIControls.ReactBreak_Strength = reactTab:Slider("Break Strength", "starts at 0.7", 0.1, 3, 0.7, function(v) ReactBreak.Strength=v end)
+UIControls.ReactBreak_Distance = reactTab:Slider("Break Distance", nil, 4, 40, 16, function(v) ReactBreak.Distance=v end, " studs")
 local function FireUniversalReact(mag)
 	pcall(function()
 		local ball, root = GetMainBall(), Cache.Root
@@ -3318,6 +3411,11 @@ SyncUIFromState = function()
 		if ReactKiller then
 			set(UIControls.ReactKiller, ReactKiller.Enabled)
 			set(UIControls.ReactKiller_Fires, ReactKiller.Fires)
+		end
+		if ReactBreak then
+			set(UIControls.ReactBreak, ReactBreak.Enabled)
+			set(UIControls.ReactBreak_Strength, ReactBreak.Strength)
+			set(UIControls.ReactBreak_Distance, ReactBreak.Distance)
 		end
 		if CircleReach then
 			set(UIControls.CircleEnabled, CircleReach.Enabled)
