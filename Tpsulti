@@ -1284,10 +1284,7 @@ do
         return false
     end
     local function macro_KeepSave()
-        ccKeep1()
-        task.wait(CC.keepToSave)
-        ccSave()
-        -- GK Helper on right after Keep+Save finishes, then auto-off at 2.2s
+        -- INSTANT GK arm the moment the button is hit (no wait)
         if not GKHelper.Enabled then
             StartGKHelper()
         end
@@ -1296,6 +1293,10 @@ do
                 StopGKHelper()
             end
         end)
+        -- keep + save still runs
+        ccKeep1()
+        task.wait(CC.keepToSave)
+        ccSave()
     end
     local function macro_JumpKeepSave() ccJump() task.wait(CC.keepToSave) ccKeep1() task.wait(CC.keepToSave) ccSave() end
     local CC_MACROS = { KeepSave = macro_KeepSave, JumpKeepSave = macro_JumpKeepSave }
@@ -2935,37 +2936,70 @@ gkTab:Button("Test Jump+Keep+Save", false, function() ccRunCombo("JumpKeepSave")
 ---------------------------------------------------------------------------
 NRC = { Enabled=false, Magnitude=4, Fires=2, Distance=15, Conn=nil }
 ReactKiller = { Enabled=false, Fires=30, Distance=20, Conn=nil }
-ReactBreak = { Enabled=false, Strength=0.7, Distance=16, Conn=nil }
+ReactBreak = { Enabled=false, Strength=0.7, Distance=16, Conn=nil, LastTouch = {} }
+
+local ENEMY_LIMBS = { "Head", "Torso", "UpperTorso", "LowerTorso", "HumanoidRootPart",
+    "Left Arm", "Right Arm", "Left Leg", "Right Leg",
+    "LeftUpperArm", "RightUpperArm", "LeftLowerArm", "RightLowerArm",
+    "LeftUpperLeg", "RightUpperLeg", "LeftLowerLeg", "RightLowerLeg",
+    "LeftHand", "RightHand", "LeftFoot", "RightFoot" }
 
 SetReactBreakEnabled = function(v, silent)
 	ReactBreak.Enabled = v and true or false
 	if ReactBreak.Conn then pcall(function() ReactBreak.Conn:Disconnect() end) ReactBreak.Conn = nil end
+	ReactBreak.LastTouch = {}
 	if ReactBreak.Enabled then
 		ReactBreak.Conn = RunService.Heartbeat:Connect(function()
 			if not ReactBreak.Enabled then return end
 			local ball = GetMainBall()
-			if not ball or not ball.Parent then return end
+			if not ball or not ball.Parent or not ball:IsA("BasePart") then return end
 			local bpos = ball.Position
 			local dist = ReactBreak.Distance or 16
-			local strength = ReactBreak.Strength or 0.7
+			local strength = math.max(ReactBreak.Strength or 0.7, 0.1)
+			local now = tick()
 			for _, plr in ipairs(Players:GetPlayers()) do
-				if plr ~= LocalPlayer and plr.Character then
-					local root = plr.Character:FindFirstChild("HumanoidRootPart")
-					if root then
-						local offset = bpos - root.Position
-						local mag = offset.Magnitude
-						if mag > 0.05 and mag <= dist then
-							-- push ball away from enemy only (never touches local player)
-							local dir = offset.Unit
-							local push = dir * (strength * 28 + (dist - mag) * 1.1)
-							pcall(function()
-								ball.AssemblyLinearVelocity = ball.AssemblyLinearVelocity + push * 0.085
-								ball.AssemblyAngularVelocity = ball.AssemblyAngularVelocity + Vector3.new(
-									(math.random() - 0.5) * strength * 12,
-									(math.random() - 0.5) * strength * 12,
-									(math.random() - 0.5) * strength * 12
-								)
-							end)
+				if plr == LocalPlayer then continue end
+				local char = plr.Character
+				if not char then continue end
+				local root = char:FindFirstChild("HumanoidRootPart")
+				if not root then continue end
+				local offset = bpos - root.Position
+				local mag = offset.Magnitude
+				if mag < 0.08 or mag > dist then continue end
+
+				-- 1) hard kick the ball OFF the enemy (breaks their react trajectory)
+				local dir = offset.Unit
+				local kick = strength * (42 + (dist - mag) * 2.8)
+				pcall(function()
+					local cur = ball.AssemblyLinearVelocity
+					-- cancel any velocity component pointing at the enemy, then shove outward
+					local towardEnemy = -dir
+					local cancel = cur:Dot(towardEnemy)
+					if cancel > 0 then
+						cur = cur - towardEnemy * cancel
+					end
+					ball.AssemblyLinearVelocity = cur + dir * kick
+					ball.AssemblyAngularVelocity = Vector3.new(
+						(math.random() - 0.5) * strength * 55,
+						(math.random() - 0.5) * strength * 55,
+						(math.random() - 0.5) * strength * 55
+					)
+				end)
+
+				-- 2) spam firetouchinterest on enemy limbs so their client react state gets eaten
+				if firetouchinterest then
+					for _, limbName in ipairs(ENEMY_LIMBS) do
+						local limb = char:FindFirstChild(limbName)
+						if limb and limb:IsA("BasePart") then
+							local key = plr.UserId .. ":" .. limbName
+							local last = ReactBreak.LastTouch[key] or 0
+							if (now - last) >= 0.05 then
+								ReactBreak.LastTouch[key] = now
+								pcall(function()
+									firetouchinterest(ball, limb, 0)
+									firetouchinterest(ball, limb, 1)
+								end)
+							end
 						end
 					end
 				end
