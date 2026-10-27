@@ -1,6 +1,8 @@
 -- Valkyrie.ui | Fivelyss systems | red VEF shell | no key
 -- Configs tab + full workspace save/load (reach, sliders, GK, macros, anti-ban, tools)
 -- FIXED: SetCircleReachEnabled was mid-function spliced (syntax break). Restored clean.
+-- NEW: Mobile button transparency (0 = solid · 1 = fully invisible, still works)
+-- NEW: Circle Reach axis scales (RadiusX / RadiusY / RadiusZ ellipsoid)
 
 local Players, RunService, UserInputService, Lighting, Workspace,
       TeleportService, CoreGui, StarterGui, Stats, Debris, VirtualUser,
@@ -118,6 +120,7 @@ local UIControls = {}
 local SyncUIFromState
 local SetNRCEnabled, SetReactKillerEnabled, SetReactBreakEnabled
 local Notify
+local ReactBreak
 
 local function CollectMobilePositions()
     local positions = {}
@@ -186,7 +189,7 @@ end
 
 local function CollectConfigSnapshot()
     local data = {
-        version = 4,
+        version = 5,
         placeId = game.PlaceId,
         savedAt = os.date("%Y-%m-%d %H:%M:%S"),
         mobile = {
@@ -274,6 +277,9 @@ local function CollectConfigSnapshot()
             data.circleReach = {
                 Enabled = CircleReach.Enabled == true,
                 Radius = CircleReach.Radius,
+                RadiusX = CircleReach.RadiusX,
+                RadiusY = CircleReach.RadiusY,
+                RadiusZ = CircleReach.RadiusZ,
                 Visible = CircleReach.Visible == true,
                 Transparency = CircleReach.Transparency,
                 Mode = CircleReach.Mode or "Both",
@@ -416,6 +422,22 @@ local function ApplyConfigSnapshot(data)
         if data.circleReach and CircleReach then
             if data.circleReach.Radius ~= nil then
                 CircleReach.Radius = tonumber(data.circleReach.Radius) or CircleReach.Radius
+            end
+            if data.circleReach.RadiusX ~= nil then
+                CircleReach.RadiusX = tonumber(data.circleReach.RadiusX) or CircleReach.RadiusX
+            end
+            if data.circleReach.RadiusY ~= nil then
+                CircleReach.RadiusY = tonumber(data.circleReach.RadiusY) or CircleReach.RadiusY
+            end
+            if data.circleReach.RadiusZ ~= nil then
+                CircleReach.RadiusZ = tonumber(data.circleReach.RadiusZ) or CircleReach.RadiusZ
+            end
+            -- legacy: if only Radius present, seed all axes
+            if data.circleReach.Radius ~= nil and data.circleReach.RadiusX == nil then
+                local r = tonumber(data.circleReach.Radius) or 12
+                CircleReach.RadiusX = r
+                CircleReach.RadiusY = r
+                CircleReach.RadiusZ = r
             end
             if data.circleReach.Transparency ~= nil then
                 CircleReach.Transparency = tonumber(data.circleReach.Transparency) or CircleReach.Transparency
@@ -1046,7 +1068,8 @@ do
 end
 
 ---------------------------------------------------------------------------
--- CIRCLE REACH  (body sphere · arms / legs / both · firetouchinterest)
+-- CIRCLE REACH  (body ellipsoid · arms / legs / both · firetouchinterest)
+-- RadiusX / RadiusY / RadiusZ = independent axes (Y-up world)
 ---------------------------------------------------------------------------
 do
     local ARMS = { "Right Arm", "Left Arm" }
@@ -1054,7 +1077,10 @@ do
 
     CircleReach = {
         Enabled = false,
-        Radius = 12,
+        Radius = 12,      -- legacy master (kept for old configs)
+        RadiusX = 12,     -- left-right
+        RadiusY = 12,     -- up-down
+        RadiusZ = 12,     -- forward-back
         Visible = true,
         Transparency = 0.65,
         Mode = "Both", -- "Arms" | "Legs" | "Both"
@@ -1073,6 +1099,13 @@ do
         return out
     end
 
+    local function getRadii()
+        local rx = math.max(tonumber(CircleReach.RadiusX) or CircleReach.Radius or 12, 0.5)
+        local ry = math.max(tonumber(CircleReach.RadiusY) or CircleReach.Radius or 12, 0.5)
+        local rz = math.max(tonumber(CircleReach.RadiusZ) or CircleReach.Radius or 12, 0.5)
+        return rx, ry, rz
+    end
+
     UpdateCircleReachVisual = function()
         local root = GetRoot()
         if not CircleReach.Enabled or not CircleReach.Visible or not root then
@@ -1082,7 +1115,7 @@ do
             end
             return
         end
-        local r = math.max(CircleReach.Radius or 12, 1)
+        local rx, ry, rz = getRadii()
         local vis = CircleReach.Visual
         if not vis or not vis.Parent then
             vis = Instance.new("Part")
@@ -1099,9 +1132,8 @@ do
             vis.Parent = Workspace
             CircleReach.Visual = vis
         end
-        -- sphere centered on body (HRP)
-        local d = r * 2
-        vis.Size = Vector3.new(d, d, d)
+        -- Ball shape scales into an ellipsoid when Size axes differ
+        vis.Size = Vector3.new(rx * 2, ry * 2, rz * 2)
         vis.Transparency = CircleReach.Transparency or 0.65
         vis.CFrame = root.CFrame
     end
@@ -1129,8 +1161,7 @@ do
 
         UpdateCircleReachVisual()
 
-        local radius = CircleReach.Radius or 12
-        local r2 = radius * radius
+        local rx, ry, rz = getRadii()
         local limbs = activeLimbs()
         local balls = GetBallList()
         if #balls == 0 then
@@ -1139,12 +1170,16 @@ do
         end
 
         local now = tick()
+        local rootPos = root.Position
         for i = 1, #balls do
             local ball = balls[i]
             if ball and ball.Parent and ball:IsA("BasePart") then
-                local offset = ball.Position - root.Position
-                local dist2 = offset.X * offset.X + offset.Y * offset.Y + offset.Z * offset.Z
-                if dist2 <= r2 then
+                local offset = ball.Position - rootPos
+                -- ellipsoid test: (dx/rx)^2 + (dy/ry)^2 + (dz/rz)^2 <= 1
+                local nx = offset.X / rx
+                local ny = offset.Y / ry
+                local nz = offset.Z / rz
+                if (nx * nx + ny * ny + nz * nz) <= 1 then
                     for _, limbName in ipairs(limbs) do
                         local limb = char:FindFirstChild(limbName)
                         if limb and limb:IsA("BasePart") then
@@ -1161,7 +1196,7 @@ do
         end
     end
 
-    -- FIXED: clean SetCircleReachEnabled (was mid-function spliced and broken)
+    -- FIXED: clean SetCircleReachEnabled
     SetCircleReachEnabled = function(v, silent)
         CircleReach.Enabled = v and true or false
         if CircleReach.Conn then
@@ -1340,6 +1375,7 @@ do
         btn.Active = true
         btn.Visible = true
         btn.AutoButtonColor = false
+        -- stay clickable even at transparency 1
         btn.Parent = ccGui
         local corner = Instance.new("UICorner") corner.CornerRadius = UDim.new(0, 10) corner.Parent = btn
         local stroke = Instance.new("UIStroke")
@@ -1402,11 +1438,29 @@ do
 
     ccSyncSizes = function() for _, r in pairs(ccRefs) do r.btn.Size = UDim2.new(0, CC.btn.size, 0, CC.btn.size) end end
     ccSyncOpacity = function()
+        local t = math.clamp(CC.btn.transparency or 0, 0, 1)
         for _, r in pairs(ccRefs) do
-            r.btn.BackgroundTransparency = CC.btn.transparency
-            r.btn.TextTransparency = CC.btn.transparency
-            if r.stroke then r.stroke.Transparency = math.clamp(0.35 + CC.btn.transparency, 0, 1) end
+            r.btn.BackgroundTransparency = t
+            r.btn.TextTransparency = t
+            if r.stroke then r.stroke.Transparency = math.clamp(0.35 + t, 0, 1) end
         end
+        -- also push opacity to GK helper + eye so the whole mobile set fades together
+        pcall(function()
+            local gk = ccGui:FindFirstChild("ccGKHelper")
+            if gk then
+                gk.BackgroundTransparency = t
+                gk.TextTransparency = t
+                local st = gk:FindFirstChildOfClass("UIStroke")
+                if st then st.Transparency = math.clamp(0.35 + t, 0, 1) end
+            end
+            local eye = ccGui:FindFirstChild("ccEyeToggle")
+            if eye then
+                eye.BackgroundTransparency = math.clamp(t * 0.9, 0, 0.95)
+                eye.TextTransparency = t
+                local st = eye:FindFirstChildOfClass("UIStroke")
+                if st then st.Transparency = math.clamp(0.3 + t, 0, 1) end
+            end
+        end)
     end
     ccSyncLock = function()
         for _, r in pairs(ccRefs) do r.stroke.Color = CC.btn.locked and Color3.fromRGB(255, 105, 180) or Color3.fromRGB(255, 200, 60) end
@@ -2255,6 +2309,13 @@ do
             else
                 stroke.Color = GKHelper.Enabled and Color3.fromRGB(80, 255, 120) or Color3.fromRGB(255, 200, 60)
             end
+            -- respect global mobile transparency
+            if CC and CC.btn and CC.btn.transparency then
+                local t = math.clamp(CC.btn.transparency, 0, 1)
+                btn.BackgroundTransparency = t
+                btn.TextTransparency = t
+                stroke.Transparency = math.clamp(0.35 + t, 0, 1)
+            end
         end
         refreshBtn()
 
@@ -2849,7 +2910,7 @@ end
 ---------------------------------------------------------------------------
 local statusTab = makeTab("Status", "◆")
 statusTab:Section("Valkyrie.ui", "Fivelyss systems · TPS / MPS")
-statusTab:Label("v2.9 · configs tab · workspace save · air-tracking GK · limb reach")
+statusTab:Label("v3.0 · mobile opacity · circle axis scales · configs · air-tracking GK · limb reach")
 statusTab:Label("Toggle menu: RightControl  ·  Mobile: top orb + GK button")
 statusTab:Label("Player: "..LocalPlayer.Name.."  ·  Place: "..tostring(game.PlaceId))
 
@@ -2888,32 +2949,54 @@ UIControls.RightLegVisualizer = reachTab:Toggle("Right Leg Vis", nil, false, fun
 UIControls.LeftLegVisualizer = reachTab:Toggle("Left Leg Vis", nil, false, function(v) reachSettings.LeftLegVisualizer=v; UpdateLimbVisualizer("Left Leg") end)
 
 ---------------------------------------------------------------------------
--- CIRCLE REACH TAB  (separate method — arms/legs firetouchinterest in radius)
+-- CIRCLE REACH TAB  (ellipsoid · independent X / Y / Z radii)
 ---------------------------------------------------------------------------
 local circleTab = makeTab("Circle", "○")
-circleTab:Section("Circle Reach", "Sphere around body · firetouchinterest · arms / legs / both")
-circleTab:Label("Sphere centered on your body. Not limb hitboxes. Pick arms, legs, or both.")
+circleTab:Section("Circle Reach", "Ellipsoid around body · firetouchinterest · arms / legs / both")
+circleTab:Label("Volume centered on HRP. Set Radius X / Y / Z independently to stretch the sphere.")
 UIControls.CircleEnabled = circleTab:Toggle("Enable Circle Reach", nil, false, function(v)
 	SetCircleReachEnabled(v)
 end)
 UIControls.CircleMode = circleTab:Dropdown("Limbs", { "Both", "Arms", "Legs" }, "Both", function(v)
 	CircleReach.Mode = v
 end)
-UIControls.CircleRadius = circleTab:Slider("Radius", "sphere size around body", 2, 40, 12, function(v)
-	CircleReach.Radius = v
+UIControls.CircleRadiusX = circleTab:Slider("Radius X", "left-right", 1, 40, 12, function(v)
+	CircleReach.RadiusX = v
+	CircleReach.Radius = (CircleReach.RadiusX + CircleReach.RadiusY + CircleReach.RadiusZ) / 3
 	UpdateCircleReachVisual()
 end, " studs")
-UIControls.CircleVisible = circleTab:Toggle("Show Sphere", nil, true, function(v)
+UIControls.CircleRadiusY = circleTab:Slider("Radius Y", "up-down", 1, 40, 12, function(v)
+	CircleReach.RadiusY = v
+	CircleReach.Radius = (CircleReach.RadiusX + CircleReach.RadiusY + CircleReach.RadiusZ) / 3
+	UpdateCircleReachVisual()
+end, " studs")
+UIControls.CircleRadiusZ = circleTab:Slider("Radius Z", "forward-back", 1, 40, 12, function(v)
+	CircleReach.RadiusZ = v
+	CircleReach.Radius = (CircleReach.RadiusX + CircleReach.RadiusY + CircleReach.RadiusZ) / 3
+	UpdateCircleReachVisual()
+end, " studs")
+UIControls.CircleVisible = circleTab:Toggle("Show Volume", nil, true, function(v)
 	CircleReach.Visible = v
 	UpdateCircleReachVisual()
 end)
-UIControls.CircleTransparency = circleTab:Slider("Visibility", "0 = solid · 1 = invisible", 0, 1, 0.65, function(v)
+UIControls.CircleTransparency = circleTab:Slider("Vis Opacity", "0 = solid · 1 = invisible", 0, 1, 0.65, function(v)
 	CircleReach.Transparency = v
 	UpdateCircleReachVisual()
 end)
-circleTab:Button("Refresh Sphere", false, function()
+circleTab:Button("Reset Axes to 12", false, function()
+	CircleReach.RadiusX = 12
+	CircleReach.RadiusY = 12
+	CircleReach.RadiusZ = 12
+	CircleReach.Radius = 12
+	if UIControls.CircleRadiusX then UIControls.CircleRadiusX:Set(12) end
+	if UIControls.CircleRadiusY then UIControls.CircleRadiusY:Set(12) end
+	if UIControls.CircleRadiusZ then UIControls.CircleRadiusZ:Set(12) end
 	UpdateCircleReachVisual()
-	Notify("Sphere refreshed", 2)
+	Notify("Axes reset", 2)
+end)
+circleTab:Button("Refresh Volume", false, function()
+	UpdateCircleReachVisual()
+	Notify("Volume refreshed", 2)
 end)
 
 local gkTab = makeTab("GK", "🧤")
@@ -2927,9 +3010,26 @@ UIControls.ShowMobile = gkTab:Toggle("Show Mobile Buttons", nil, true, function(
 UIControls.LockButtons = gkTab:Toggle("Lock Buttons", nil, false, function(v) CC.btn.locked=v; ccSyncLock() end)
 UIControls.EnableMacros = gkTab:Toggle("Enable Macros", nil, true, function(v) CC.mobEnabled=v end)
 UIControls.BtnSize = gkTab:Slider("Button Size", nil, 40, 180, 88, function(v) CC.btn.size=v; ccSyncSizes() end, " px")
+-- NEW: full-range transparency — 1.0 = completely invisible, still fully clickable
+UIControls.BtnTransparency = gkTab:Slider("Button Opacity", "0 = solid · 1 = invisible (still works)", 0, 1, 0.12, function(v)
+	CC.btn.transparency = v
+	if ccSyncOpacity then ccSyncOpacity() end
+end)
 UIControls.KeepToSave = gkTab:Slider("Keep→Save Gap", nil, 0, 0.5, 0.08, function(v) CC.keepToSave=v end, " s")
 gkTab:Button("Test Keep+Save", false, function() ccRunCombo("KeepSave") end)
 gkTab:Button("Test Jump+Keep+Save", false, function() ccRunCombo("JumpKeepSave") end)
+gkTab:Button("Make Buttons Invisible", false, function()
+	CC.btn.transparency = 1
+	if UIControls.BtnTransparency then UIControls.BtnTransparency:Set(1) end
+	if ccSyncOpacity then ccSyncOpacity() end
+	Notify("Buttons invisible · still active", 2)
+end)
+gkTab:Button("Make Buttons Solid", false, function()
+	CC.btn.transparency = 0
+	if UIControls.BtnTransparency then UIControls.BtnTransparency:Set(0) end
+	if ccSyncOpacity then ccSyncOpacity() end
+	Notify("Buttons solid", 2)
+end)
 
 ---------------------------------------------------------------------------
 -- REACT / TOOLS / SKY / PERF / PROTECT  (feature tables defined here so config can see them)
@@ -3103,7 +3203,7 @@ toolsTab:Button("Rejoin", false, function() TeleportService:Teleport(game.PlaceI
 ---------------------------------------------------------------------------
 local configsTab = makeTab("Configs", "💾")
 configsTab:Section("Save / Load", "Writes to executor workspace + ValkyrieConfigs/")
-configsTab:Label("Saves: reach + circle reach, GK, mobile positions, NRC, React Killer, AntiBan, sky")
+configsTab:Label("Saves: reach + circle axes, GK, mobile positions/opacity, NRC, React Killer, AntiBan, sky")
 configsTab:Label("Files: workspace/valkyrie_tps_ulti.json  and  ValkyrieConfigs/tps_ulti.json")
 
 configsTab:Button("Save Config", true, function()
@@ -3133,7 +3233,7 @@ configsTab:Button("Save Positions Now", false, function()
 	Notify(ok and "Positions saved" or ("Fail · "..tostring(res)), ok and 2 or 3)
 end)
 
-configsTab:Section("Named Slots", "Cycle or pick a name then Save As / Load")
+configsTab:Section("Named slots", "Cycle or pick a name then Save As / Load")
 local namedSlot = "slot1"
 local namedDrop = configsTab:Dropdown("Slot Name", {
 	"slot1", "slot2", "slot3", "slot4", "slot5",
@@ -3435,6 +3535,7 @@ SyncUIFromState = function()
 			set(UIControls.LockButtons, CC.btn and CC.btn.locked)
 			set(UIControls.EnableMacros, CC.mobEnabled)
 			set(UIControls.BtnSize, CC.btn and CC.btn.size)
+			set(UIControls.BtnTransparency, CC.btn and CC.btn.transparency)
 			set(UIControls.KeepToSave, CC.keepToSave)
 		end
 		if NRC then
@@ -3453,7 +3554,9 @@ SyncUIFromState = function()
 		end
 		if CircleReach then
 			set(UIControls.CircleEnabled, CircleReach.Enabled)
-			set(UIControls.CircleRadius, CircleReach.Radius)
+			set(UIControls.CircleRadiusX, CircleReach.RadiusX or CircleReach.Radius)
+			set(UIControls.CircleRadiusY, CircleReach.RadiusY or CircleReach.Radius)
+			set(UIControls.CircleRadiusZ, CircleReach.RadiusZ or CircleReach.Radius)
 			set(UIControls.CircleVisible, CircleReach.Visible)
 			set(UIControls.CircleTransparency, CircleReach.Transparency)
 			set(UIControls.CircleMode, CircleReach.Mode or "Both")
@@ -3577,6 +3680,7 @@ boot({
 		if CC and CC.btn then
 			CC.btn.visible = true
 			if ccSyncVisible then ccSyncVisible() end
+			if ccSyncOpacity then ccSyncOpacity() end
 		end
 		local roots = {}
 		pcall(function() if gethui then table.insert(roots, gethui()) end end)
@@ -3606,4 +3710,4 @@ boot({
 	end)
 end)
 
-print("[Valkyrie.ui] Fivelyss systems online · red theme · Configs tab live · FIXED SetCircleReachEnabled")
+print("[Valkyrie.ui] Fivelyss systems online · red theme · mobile opacity · circle X/Y/Z axes · FIXED SetCircleReachEnabled")
