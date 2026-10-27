@@ -2,7 +2,8 @@
 -- Configs tab + full workspace save/load (reach, sliders, GK, macros, anti-ban, tools)
 -- FIXED: SetCircleReachEnabled was mid-function spliced (syntax break). Restored clean.
 -- TUNED: GK helper stronger on rockets (faster move/boost, tighter lateral stick, still smoothed)
--- TUNED: Keep+Save GK arm window 1.8s (was 2.2s)
+-- TUNED: Keep+Save GK arm window 1.3s
+-- TUNED: GK ~10x stronger on rockets · hard stop on slow balls (no drift)
 -- NEW: Mobile button transparency (0 = solid · 1 = fully invisible, still works)
 -- NEW: Circle Reach axis scales (RadiusX / RadiusY / RadiusZ ellipsoid)
 
@@ -1325,7 +1326,7 @@ do
         if not GKHelper.Enabled then
             StartGKHelper()
         end
-        task.delay(1.8, function()
+        task.delay(1.3, function()
             if GKHelper.Enabled then
                 StopGKHelper()
             end
@@ -1583,43 +1584,42 @@ do
     GK_CONFIG = {
         GOAL_WIDTH = 42,
         PITCH_GROUND_Y = 5.5,
-        BALL_SPEED_THRESHOLD = 2.4,
-        FAST_SHOT_SPEED = 48,
-        BLAST_SHOT_SPEED = 72,
-        PREDICTION_MAX_T = 7.5,
-        TRIGGER_T = 6.0,
-        EARLY_T = 7.5,
-        MOVE_SPEED = 125,
-        EARLY_SPEED = 110,
-        FAST_MOVE_SPEED = 155,
-        BLAST_MOVE_SPEED = 185,
+        BALL_SPEED_THRESHOLD = 4.5,   -- ignore slow floaters harder
+        FAST_SHOT_SPEED = 38,
+        BLAST_SHOT_SPEED = 58,
+        PREDICTION_MAX_T = 8.0,
+        TRIGGER_T = 6.5,
+        EARLY_T = 8.0,
+        MOVE_SPEED = 180,
+        EARLY_SPEED = 150,
+        FAST_MOVE_SPEED = 240,
+        BLAST_MOVE_SPEED = 320,
         ORIGINAL_SPEED = 20,
-        GK_BASE_OFFSET = 1.35,
-        MAX_COMMIT = 48,
-        GRAVITY_FAST = 20,
-        GRAVITY_SLOW = 32,
-        AIR_FOLLOW_HEIGHT = 4.0,
-        AIR_TRACK_LERP = 0.94,
-        HIGH_BALL_Y = 9.0,
-        HIGH_LERP = 0.97,
-        AIR_MIN_TTG = 0.08,
-        RETURN_FADE_TIME = 0.12,
-        BALL_REFRESH_INTERVAL = 0.025,
-        MIN_MOVE_DIST = 0.1,
-        TOWARD_VEL = 0.32,
-        FAR_PRE_RANGE = 165,
-        -- only track balls once they are inside the penalty box (not outside / in front)
-        PENALTY_DEPTH = 58,
-        PENALTY_HALF_WIDTH = 28,
-        MAX_RETREAT = 16,
-        RETREAT_HIGH_STRAIGHT = 5.0,
-        RETREAT_LOW_STRAIGHT = 1.5,
-        FORWARD_BLEND = 0.52,
-        LAT_SMOOTH = 0.62,
-        LAT_SMOOTH_FAST = 0.88,
-        CLOSE_LEAD = 0.62,
-        BOOST_MAX = 210,
-        BOOST_MAX_BLAST = 255,
+        GK_BASE_OFFSET = 1.2,
+        MAX_COMMIT = 62,
+        GRAVITY_FAST = 18,
+        GRAVITY_SLOW = 30,
+        AIR_FOLLOW_HEIGHT = 3.5,
+        AIR_TRACK_LERP = 0.97,
+        HIGH_BALL_Y = 8.5,
+        HIGH_LERP = 0.985,
+        AIR_MIN_TTG = 0.05,
+        RETURN_FADE_TIME = 0.08,
+        BALL_REFRESH_INTERVAL = 0.02,
+        MIN_MOVE_DIST = 0.06,
+        TOWARD_VEL = 0.25,
+        FAR_PRE_RANGE = 180,
+        PENALTY_DEPTH = 62,
+        PENALTY_HALF_WIDTH = 30,
+        MAX_RETREAT = 18,
+        RETREAT_HIGH_STRAIGHT = 5.5,
+        RETREAT_LOW_STRAIGHT = 1.8,
+        FORWARD_BLEND = 0.58,
+        LAT_SMOOTH = 0.72,
+        LAT_SMOOTH_FAST = 0.94,
+        CLOSE_LEAD = 0.78,
+        BOOST_MAX = 340,
+        BOOST_MAX_BLAST = 480,
     }
 
     GKHelper = {
@@ -1827,56 +1827,57 @@ do
     end
 
     local function resolveLateral(ballPos, vel, pred, ttg, axis)
-        local half = GK_CONFIG.GOAL_WIDTH * 0.48
+        local half = GK_CONFIG.GOAL_WIDTH * 0.5
         local live = (axis == "Z") and ballPos.X or ballPos.Z
         local vLat = (axis == "Z") and vel.X or vel.Z
         local predLat = pred and ((axis == "Z") and pred.X or pred.Z) or live
         local absVLat = math.abs(vLat)
-        -- rockets get longer lead so GK commits early without teleport
-        local leadT = GK_CONFIG.CLOSE_LEAD or 0.62
-        if ttg then leadT = math.clamp(ttg * 0.72, 0.2, 1.05) end
-        if absVLat >= 50 then
-            leadT = math.clamp(leadT + 0.42, 0.4, 1.35)
-        elseif absVLat >= 30 then
-            leadT = math.clamp(leadT + 0.22, 0.3, 1.15)
+        local leadT = GK_CONFIG.CLOSE_LEAD or 0.78
+        if ttg then leadT = math.clamp(ttg * 0.85, 0.22, 1.25) end
+        if absVLat >= 40 then
+            leadT = math.clamp(leadT + 0.55, 0.45, 1.55)
+        elseif absVLat >= 22 then
+            leadT = math.clamp(leadT + 0.3, 0.35, 1.3)
         end
         local lead = live + vLat * leadT
-        local close = (ttg and ttg < 1.25) or false
+        local close = (ttg and ttg < 1.4) or false
         local raw
         if close then
-            raw = lead * 0.62 + live * 0.2 + predLat * 0.18
+            raw = lead * 0.72 + live * 0.12 + predLat * 0.16
         else
-            local blend = 0.48
-            if ttg and ttg < 2.2 then blend = 0.62 end
-            if ttg and ttg < 1.5 then blend = 0.78 end
-            if absVLat >= 40 then
-                blend = math.min(blend + 0.22, 0.92)
+            local blend = 0.58
+            if ttg and ttg < 2.4 then blend = 0.72 end
+            if ttg and ttg < 1.6 then blend = 0.86 end
+            if absVLat >= 30 then
+                blend = math.min(blend + 0.18, 0.96)
             end
             raw = live * (1 - blend) + predLat * blend
-            raw = raw * 0.68 + lead * 0.32
+            raw = raw * 0.55 + lead * 0.45
         end
         raw = math.clamp(raw, -half, half)
         local ballSpeed = vel.Magnitude
-        local sm = GK_CONFIG.LAT_SMOOTH or 0.62
-        if ballSpeed >= (GK_CONFIG.BLAST_SHOT_SPEED or 72) then
-            sm = 0.96
-        elseif ballSpeed >= (GK_CONFIG.FAST_SHOT_SPEED or 48) then
-            sm = GK_CONFIG.LAT_SMOOTH_FAST or 0.88
+        local sm = GK_CONFIG.LAT_SMOOTH or 0.72
+        if ballSpeed >= (GK_CONFIG.BLAST_SHOT_SPEED or 58) then
+            sm = 0.99
+        elseif ballSpeed >= (GK_CONFIG.FAST_SHOT_SPEED or 38) then
+            sm = GK_CONFIG.LAT_SMOOTH_FAST or 0.94
         end
-        -- stick tighter on pure lateral rockets (still lerped, not snapped)
-        if absVLat >= 55 then
-            sm = math.max(sm, 0.98)
-        elseif absVLat >= 35 then
-            sm = math.max(sm, 0.92)
+        if absVLat >= 45 then
+            sm = math.max(sm, 0.995)
+        elseif absVLat >= 28 then
+            sm = math.max(sm, 0.97)
         end
         if GKHelper.SmoothLat == nil then
             GKHelper.SmoothLat = raw
         else
             local delta = raw - GKHelper.SmoothLat
-            if math.abs(delta) < 2.8 and ballSpeed < (GK_CONFIG.FAST_SHOT_SPEED or 48) then
+            -- slow / low-lat: almost no movement (kills drift toward floaters)
+            if ballSpeed < (GK_CONFIG.FAST_SHOT_SPEED or 38) and absVLat < 18 then
+                GKHelper.SmoothLat = GKHelper.SmoothLat + delta * math.min(sm * 0.35, 0.4)
+            elseif math.abs(delta) < 2.0 and ballSpeed < (GK_CONFIG.FAST_SHOT_SPEED or 38) then
                 GKHelper.SmoothLat = GKHelper.SmoothLat + delta * sm
             else
-                GKHelper.SmoothLat = GKHelper.SmoothLat + delta * math.min(sm + 0.18, 0.98)
+                GKHelper.SmoothLat = GKHelper.SmoothLat + delta * math.min(sm + 0.12, 0.995)
             end
         end
         return math.clamp(GKHelper.SmoothLat, -half, half)
@@ -2038,10 +2039,15 @@ do
                 return
             end
 
-            if speed < (GK_CONFIG.BALL_SPEED_THRESHOLD or 2.8) then
+                        -- slow ball: full stop. never drift toward / away from a floater
+            if speed < (GK_CONFIG.BALL_SPEED_THRESHOLD or 4.5) then
                 if GKHelper.IsMoving then
                     hum.WalkSpeed = GKHelper.OriginalSpeed
                     pcall(function() hum:Move(Vector3.zero) end)
+                    pcall(function()
+                        local v = hrp.AssemblyLinearVelocity
+                        hrp.AssemblyLinearVelocity = Vector3.new(0, v.Y, 0)
+                    end)
                     GKHelper.IsMoving = false
                     GKHelper.LastTarget = nil
                 end
@@ -2165,8 +2171,8 @@ do
                 if inAir or isHigh or fastShot then
                     local curPos = hrp.Position
                     local lerpAmt = isHigh and GK_CONFIG.HIGH_LERP or GK_CONFIG.AIR_TRACK_LERP
-                    if blastShot then lerpAmt = 0.99
-                    elseif fastShot then lerpAmt = math.max(lerpAmt, 0.96) end
+                    if blastShot then lerpAmt = 0.995
+                    elseif fastShot then lerpAmt = math.max(lerpAmt, 0.985) end
                     local lerpX = curPos.X + (target.X - curPos.X) * lerpAmt
                     local lerpZ = curPos.Z + (target.Z - curPos.Z) * lerpAmt
                     target = Vector3.new(lerpX, curPos.Y, lerpZ)
@@ -2175,48 +2181,47 @@ do
                 local dxT = target.X - hrp.Position.X
                 local dzT = target.Z - hrp.Position.Z
                 local flatDist = math.sqrt(dxT*dxT + dzT*dzT)
-                local commitExtra = blastShot and 28 or (fastShot and 22 or 18)
+                local commitExtra = blastShot and 40 or (fastShot and 32 or 22)
                 if flatDist > GK_CONFIG.MIN_MOVE_DIST and flatDist < GK_CONFIG.MAX_COMMIT + commitExtra then
                     local spd = useFullSpeed and GK_CONFIG.MOVE_SPEED or GK_CONFIG.EARLY_SPEED
                     if isHigh or inAir then spd = math.max(spd, GK_CONFIG.MOVE_SPEED) end
-                    if fastShot then spd = math.max(spd, GK_CONFIG.FAST_MOVE_SPEED or 155) end
-                    if blastShot then spd = math.max(spd, GK_CONFIG.BLAST_MOVE_SPEED or 185) end
+                    if fastShot then spd = math.max(spd, GK_CONFIG.FAST_MOVE_SPEED or 240) end
+                    if blastShot then spd = math.max(spd, GK_CONFIG.BLAST_MOVE_SPEED or 320) end
                     if hum.WalkSpeed ~= spd then hum.WalkSpeed = spd end
                     hum:MoveTo(target)
 
-                    local urgent = (ttg and ttg < 1.85)
-                        or (fastShot and ttg and ttg < 2.5)
+                    local urgent = (ttg and ttg < 2.2)
+                        or (fastShot and ttg and ttg < 3.0)
                         or (blastShot)
-                        or (inAir and flatDist > 0.9)
-                        or (isHigh and flatDist > 0.75)
-                        or (fastShot and flatDist > 0.55)
-                    if urgent and flatDist > 0.18 then
+                        or (inAir and flatDist > 0.6)
+                        or (isHigh and flatDist > 0.5)
+                        or (fastShot and flatDist > 0.35)
+                    if urgent and flatDist > 0.1 then
                         local dir = Vector3.new(dxT, 0, dzT)
                         local mag = dir.Magnitude
-                        if mag > 0.05 then
+                        if mag > 0.04 then
                             dir = dir / mag
-                            local boostCap = blastShot and (GK_CONFIG.BOOST_MAX_BLAST or 255) or (fastShot and (GK_CONFIG.BOOST_MAX or 210) or 160)
-                            -- stick harder when the ball is screaming left/right
+                            local boostCap = blastShot and (GK_CONFIG.BOOST_MAX_BLAST or 480) or (fastShot and (GK_CONFIG.BOOST_MAX or 340) or 200)
                             local vLatNow = (GKHelper.GoalAxis == "Z") and vel.X or vel.Z
                             local absVLatNow = math.abs(vLatNow or 0)
-                            if absVLatNow >= 50 then
-                                boostCap = math.max(boostCap, 275)
-                            elseif absVLatNow >= 35 then
-                                boostCap = math.max(boostCap, 230)
+                            if absVLatNow >= 40 then
+                                boostCap = math.max(boostCap, 520)
+                            elseif absVLatNow >= 25 then
+                                boostCap = math.max(boostCap, 400)
                             end
                             local boost
                             if blastShot then
-                                boost = math.clamp(flatDist / math.max(ttg or 0.18, 0.05), 95, boostCap)
-                            elseif ttg and ttg < 0.4 then
-                                boost = math.clamp(flatDist / math.max(ttg, 0.05), 85, boostCap)
-                            elseif ttg and ttg < 0.85 then
-                                boost = math.clamp(flatDist / math.max(ttg, 0.08), 70, boostCap * 0.94)
-                            elseif fastShot or absVLatNow >= 40 then
-                                boost = math.clamp(72 + flatDist * 4.0, 78, boostCap * 0.95)
+                                boost = math.clamp(flatDist / math.max(ttg or 0.14, 0.04), 140, boostCap)
+                            elseif ttg and ttg < 0.35 then
+                                boost = math.clamp(flatDist / math.max(ttg, 0.04), 120, boostCap)
+                            elseif ttg and ttg < 0.75 then
+                                boost = math.clamp(flatDist / math.max(ttg, 0.06), 95, boostCap * 0.95)
+                            elseif fastShot or absVLatNow >= 28 then
+                                boost = math.clamp(100 + flatDist * 5.5, 110, boostCap * 0.97)
                             elseif inAir or isHigh then
-                                boost = math.clamp(58 + flatDist * 2.9, 58, 145)
+                                boost = math.clamp(70 + flatDist * 3.6, 70, 180)
                             else
-                                boost = math.clamp(48 + flatDist * 1.9, 48, 115)
+                                boost = math.clamp(55 + flatDist * 2.4, 55, 140)
                             end
                             local curY = hrp.AssemblyLinearVelocity.Y
                             hrp.AssemblyLinearVelocity = Vector3.new(dir.X * boost, curY, dir.Z * boost)
